@@ -31,6 +31,25 @@ Observed on the real petal ⇄ encoded in the engine:
   counterpart of "the back face stays perfectly flat" and of pass-through
   hardware classification for clip-like small components.
 
+## Corner folds + edge profile (third photo batch, 2026-07-30)
+
+- **Side profile photo (black vinyl, held edge-on):** the wrapped edge is
+  a slim rounded lens — small tight radius at the face, a visible seam
+  lip where the vinyl folds around to the back. Confirms the small
+  roundover default and the flat back.
+- **Corner photo (quilted gray square):** at a corner the vinyl cannot
+  keep the straight-edge miter — it folds into a diagonal dart and the
+  corner rounds off into a small chamfer, sitting LOW (pinned).
+- **Encoded in geometry:** the 2D-import extrusion offsets its fillet
+  rings a plain `roundover` along each vertex's bisector, deliberately
+  NOT miter-extended (`_ring_normals_inward` in import_2d.py). Convex
+  corners therefore come out chamfered/rounded like the photographed
+  folds — and this same choice keeps the inset rings self-intersection
+  free on sharp shapes (the 52x8" triangle panels).
+- **Encoded in the viewer:** vinyl material = leather-grain bump +
+  clearcoat sheen + studio environment reflections; the grazing rim
+  light mimics the raking light that makes folds visible in the photos.
+
 If future photos disagree (different foam, tighter wrap), tune the global
 parameters in the UI first; only change the code defaults in
 `backend/models.py::PillowParams` once a value is confirmed across several

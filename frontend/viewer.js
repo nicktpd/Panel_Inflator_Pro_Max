@@ -4,10 +4,70 @@
 import * as THREE from 'three';
 import { OrbitControls } from './vendor/OrbitControls.js';
 import { GLTFLoader } from './vendor/GLTFLoader.js';
+import { RoomEnvironment } from './vendor/RoomEnvironment.js';
 
 const PART_COLOR = 0xb9b2a7;      // neutral upholstery
 const HW_COLOR = 0x6f7683;        // hardware steel-gray
 const SELECT_EMISSIVE = 0x8a6a1f; // amber glow on selection
+
+// Procedural vinyl/leather grain, used as a tiling bump map. Real-world
+// tile size in mm (UVs are planar world-xy / GRAIN_TILE_MM, so grain
+// density is consistent across panels of any size).
+const GRAIN_TILE_MM = 140;
+
+function makeGrainTexture() {
+  const S = 512;
+  const c = document.createElement('canvas');
+  c.width = c.height = S;
+  const ctx = c.getContext('2d');
+  ctx.fillStyle = '#808080';
+  ctx.fillRect(0, 0, S, S);
+
+  // Wrinkle network: faint dark polylines wandering across the tile,
+  // drawn wrapped so the texture tiles seamlessly.
+  const line = (x0, y0, x1, y1, w, a) => {
+    ctx.strokeStyle = `rgba(40,40,40,${a})`;
+    ctx.lineWidth = w;
+    for (const dx of [-S, 0, S]) {
+      for (const dy of [-S, 0, S]) {
+        ctx.beginPath();
+        ctx.moveTo(x0 + dx, y0 + dy);
+        ctx.lineTo(x1 + dx, y1 + dy);
+        ctx.stroke();
+      }
+    }
+  };
+  for (let i = 0; i < 260; i++) {
+    let x = Math.random() * S, y = Math.random() * S;
+    let ang = Math.random() * Math.PI * 2;
+    const steps = 4 + (Math.random() * 8) | 0;
+    for (let s = 0; s < steps; s++) {
+      const len = 8 + Math.random() * 22;
+      const nx = x + Math.cos(ang) * len;
+      const ny = y + Math.sin(ang) * len;
+      line(x, y, nx, ny, 0.8 + Math.random() * 1.2, 0.05 + Math.random() * 0.06);
+      x = nx; y = ny;
+      ang += (Math.random() - 0.5) * 1.2;
+    }
+  }
+  // Pebble speckle: soft light/dark dots between the wrinkles.
+  for (let i = 0; i < 2600; i++) {
+    const r = 1 + Math.random() * 3;
+    const v = Math.random() > 0.5 ? 255 : 0;
+    ctx.fillStyle = `rgba(${v},${v},${v},${0.028 + Math.random() * 0.03})`;
+    const x = Math.random() * S, y = Math.random() * S;
+    for (const dx of [-S, 0, S]) {
+      for (const dy of [-S, 0, S]) {
+        ctx.beginPath();
+        ctx.arc(x + dx, y + dy, r, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+  }
+  const tex = new THREE.CanvasTexture(c);
+  tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+  return tex;
+}
 
 export class Viewer {
   constructor(canvas) {
@@ -25,10 +85,23 @@ export class Viewer {
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    // Filmic tone mapping keeps the vinyl highlights from clipping and
+    // makes the crown's shading gradient far easier to read.
+    this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    this.renderer.toneMappingExposure = 1.05;
 
     this.scene = new THREE.Scene();
     this.scene.background = new THREE.Color(0x14161b);
     this.scene.fog = new THREE.Fog(0x14161b, 4000, 9000);
+
+    // Image-based lighting: a neutral studio room so the material picks
+    // up soft window reflections — curvature reads through the moving
+    // speculars as you orbit, which raw analytic lights can't give.
+    const pmrem = new THREE.PMREMGenerator(this.renderer);
+    this.scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+    pmrem.dispose();
+
+    this.grainTex = makeGrainTexture();
 
     this.camera = new THREE.PerspectiveCamera(40, 1, 1, 20000);
     this.camera.position.set(600, -700, 600);
@@ -38,17 +111,25 @@ export class Viewer {
     this.controls.enableDamping = true;
     this.controls.dampingFactor = 0.08;
 
-    // Neutral studio lighting: soft hemisphere + warm key with shadow + cool fill.
-    this.scene.add(new THREE.HemisphereLight(0xdfe4ee, 0x30343c, 0.85));
-    const key = new THREE.DirectionalLight(0xfff2df, 1.6);
+    // Analytic lights on top of the environment: warm key with shadow,
+    // cool fill, and a low rim/grazing light that rakes across the
+    // surface — grazing light is what makes upholstery curvature and
+    // grain pop.
+    this.scene.add(new THREE.HemisphereLight(0xdfe4ee, 0x30343c, 0.35));
+    const key = new THREE.DirectionalLight(0xfff2df, 1.35);
     key.position.set(900, -600, 1400);
     key.castShadow = true;
     key.shadow.mapSize.set(2048, 2048);
+    key.shadow.bias = -0.0004;
     this.keyLight = key;
     this.scene.add(key);
-    const fill = new THREE.DirectionalLight(0xa8c0e8, 0.45);
+    const fill = new THREE.DirectionalLight(0xa8c0e8, 0.3);
     fill.position.set(-700, 500, 500);
     this.scene.add(fill);
+    const rim = new THREE.DirectionalLight(0xffe8c8, 0.9);
+    rim.position.set(-400, -900, 250); // low grazing angle
+    this.rimLight = rim;
+    this.scene.add(rim);
 
     // Ground: shadow catcher + faint grid, repositioned under each model.
     this.ground = new THREE.Mesh(
@@ -100,11 +181,35 @@ export class Viewer {
       }
       obj.userData.partId = partId;
       const cls = this.partClass[partId] || 'pillow';
-      obj.material = new THREE.MeshStandardMaterial({
-        color: cls === 'pillow' ? PART_COLOR : HW_COLOR,
-        roughness: cls === 'pillow' ? 0.62 : 0.35,
-        metalness: cls === 'pillow' ? 0.0 : 0.55,
-      });
+      if (cls === 'pillow') {
+        // Vinyl: leather-grain bump + slight clearcoat sheen. Planar
+        // world-xy UVs (set below) keep grain density identical on
+        // every panel regardless of size.
+        obj.material = new THREE.MeshPhysicalMaterial({
+          color: PART_COLOR,
+          roughness: 0.55,
+          metalness: 0.0,
+          clearcoat: 0.18,
+          clearcoatRoughness: 0.6,
+          bumpMap: this.grainTex,
+          bumpScale: 1.4,
+          envMapIntensity: 0.55,
+        });
+        const pos = obj.geometry.attributes.position;
+        const uv = new Float32Array(pos.count * 2);
+        for (let i = 0; i < pos.count; i++) {
+          uv[2 * i] = pos.getX(i) / GRAIN_TILE_MM;
+          uv[2 * i + 1] = pos.getY(i) / GRAIN_TILE_MM;
+        }
+        obj.geometry.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
+      } else {
+        obj.material = new THREE.MeshStandardMaterial({
+          color: HW_COLOR,
+          roughness: 0.35,
+          metalness: 0.55,
+          envMapIntensity: 0.8,
+        });
+      }
       obj.castShadow = true;
       obj.receiveShadow = false;
       if (!obj.geometry.attributes.normal) obj.geometry.computeVertexNormals();
@@ -275,6 +380,10 @@ export class Viewer {
     this.keyLight.position.set(center.x + radius, center.y - radius * 0.6, center.z + radius * 1.6);
     this.keyLight.target.position.copy(center);
     this.keyLight.target.updateMatrixWorld();
+    // Keep the rim light grazing: low over the model, from the far side.
+    this.rimLight.position.set(center.x - radius * 0.8, center.y - radius * 1.5, box.min.z + radius * 0.3);
+    this.rimLight.target.position.copy(center);
+    this.rimLight.target.updateMatrixWorld();
     const s = this.keyLight.shadow.camera;
     s.left = s.bottom = -radius * 2.2;
     s.right = s.top = radius * 2.2;

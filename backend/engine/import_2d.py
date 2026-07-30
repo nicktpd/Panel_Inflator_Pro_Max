@@ -30,6 +30,7 @@ import re
 from pathlib import Path
 
 import numpy as np
+import shapely
 import shapely.geometry as sg
 from shapely.geometry.polygon import orient
 
@@ -69,7 +70,9 @@ def _rings_from_svg(path: str, scale: float) -> list[np.ndarray]:
                     seg_len = seg.length(error=1e-3)
                 except Exception:
                     seg_len = abs(seg.end - seg.start)
-                n = max(int(math.ceil(seg_len / SAMPLE_STEP)), 1)
+                # Sample so spacing is ~SAMPLE_STEP in mm AFTER scaling
+                # (seg_len is in source units, e.g. px or inches).
+                n = max(int(math.ceil(seg_len * scale / SAMPLE_STEP)), 1)
                 for i in range(n):
                     pts.append(seg.point(i / n))
             if not pts:
@@ -123,14 +126,41 @@ def _rings_from_dxf(path: str, scale: float) -> tuple[list[np.ndarray], list[dic
             epath = make_path(entity)
         except Exception:
             continue
-        pts = np.array([(v.x, v.y) for v in epath.flattening(FLATTEN_TOL)], dtype=np.float64)
+        # Flattening tolerance is in DRAWING units; divide by scale so it
+        # equals FLATTEN_TOL in mm (an inch drawing flattened at 0.5 would
+        # otherwise mean 12.7 mm chords -- visibly polygonal circles).
+        tol = FLATTEN_TOL / scale
+        pts = np.array([(v.x, v.y) for v in epath.flattening(tol)], dtype=np.float64)
         if len(pts) < 3:
             continue
-        closed = epath.is_closed or np.linalg.norm(pts[0] - pts[-1]) < FLATTEN_TOL * 4
+        closed = epath.is_closed or np.linalg.norm(pts[0] - pts[-1]) < tol * 4
         if not closed:
             continue
         rings.append(pts * scale)
     return rings, labels
+
+
+def _densify_ring(ring: np.ndarray, max_seg: float = SAMPLE_STEP) -> np.ndarray:
+    """Insert points so no ring segment is longer than ``max_seg`` mm.
+
+    DXF straight segments flatten to just their endpoints, so a 52-inch
+    edge arrives as ONE segment. Everything downstream needs boundary
+    density: loft rings that can follow the crown, a fine seam ring for
+    the retriangulated top, and smooth viewer shading. (Production bug:
+    a 52x8-inch right triangle rendered as a folded mess because its
+    entire outline was 3 vertices.)
+    """
+    out: list[np.ndarray] = []
+    n = len(ring)
+    for i in range(n):
+        a, b = ring[i], ring[(i + 1) % n]
+        out.append(a)
+        seg = float(np.linalg.norm(b - a))
+        if seg > max_seg:
+            k = int(math.ceil(seg / max_seg))
+            for j in range(1, k):
+                out.append(a + (b - a) * (j / k))
+    return np.asarray(out, dtype=np.float64)
 
 
 def _clean_ring(ring: np.ndarray) -> np.ndarray | None:
@@ -159,7 +189,9 @@ def rings_to_polygons(rings: list[np.ndarray]) -> list[sg.Polygon]:
     A hole is attached to its immediate (smallest-area containing) shell.
     Deeper even rings become independent shells again (island in a hole).
     """
-    cleaned = [r for r in (_clean_ring(r) for r in rings) if r is not None]
+    cleaned = [
+        _densify_ring(r) for r in (_clean_ring(r) for r in rings) if r is not None
+    ]
     polys = [sg.Polygon(r) for r in cleaned]
     for i, p in enumerate(polys):
         if not p.is_valid:
@@ -222,12 +254,20 @@ def triangulate_cap(poly: sg.Polygon) -> tuple[np.ndarray, np.ndarray]:
 
 
 def _ring_normals_inward(ring: np.ndarray) -> np.ndarray:
-    """Per-vertex miter normals pointing INTO the material.
+    """Per-vertex UNIT bisector normals pointing INTO the material.
 
     Rings are oriented so material lies to the LEFT of travel (CCW shells,
     CW holes -- shapely orient() guarantees this), so the left normal of
-    the angle bisector points inward for both. Miter length is limited so
-    sharp corners don't spike.
+    the angle bisector points inward for both.
+
+    Deliberately NOT miter-scaled: extending a convex corner vertex to
+    the miter point (d / cos(half-angle)) pushes it past its neighbours'
+    offset line, and the inset ring then overlaps itself along the rim
+    (production case: every corner of a plain square leaked open edges).
+    A plain d-along-the-bisector offset under-cuts convex corners into a
+    small chamfer instead -- which is exactly how wrapped vinyl behaves
+    at a real corner fold (see the corner photos in reference/NOTES.md:
+    the fabric rounds off, it never forms a sharp miter).
     """
     prev = np.roll(ring, 1, axis=0)
     nxt = np.roll(ring, -1, axis=0)
@@ -243,10 +283,77 @@ def _ring_normals_inward(ring: np.ndarray) -> np.ndarray:
     flat = bn[:, 0] < 1e-9
     bis[flat] = n1[flat]
     bn[flat] = 1.0
-    bis /= bn
-    # Offset scale so EDGES move by d: 1/cos(half-turn); miter-limited.
-    cos_half = np.sqrt(np.clip((1.0 + np.sum(t1 * t2, axis=1)) / 2.0, 0.1, 1.0))
-    return bis / cos_half[:, None]
+    return bis / bn
+
+
+def _inset_ring_safe(
+    poly: sg.Polygon, ring: np.ndarray, miter_normals: np.ndarray, d: float
+) -> np.ndarray:
+    """Inset ring vertices by ``d`` without crossing the outline.
+
+    Near a sharp tail (production case: a 52x8-inch right triangle, ~9
+    degree tip) the local width drops below 2*d and plain perpendicular
+    offsets from the two converging edges cross each other, folding the
+    loft. For each vertex we try the full miter offset and progressively
+    smaller fractions, keeping the candidate (still inside the polygon)
+    with the best clearance-to-boundary, capped at the requested d. Wide
+    regions keep the exact offset; a narrowing tail pinches smoothly to
+    its centreline, which is what wrapped vinyl does anyway.
+    """
+    if d <= 1e-9:
+        return ring.copy()
+    n = len(ring)
+    fracs = np.array([1.0, 0.5, 0.25, 0.125])
+    stack = np.stack([ring + miter_normals * (d * f) for f in fracs])  # (4, n, 2)
+    pts = shapely.points(stack.reshape(-1, 2))
+    inside = shapely.contains(poly, pts).reshape(len(fracs), n)
+    clearance = shapely.distance(poly.boundary, pts).reshape(len(fracs), n)
+    score = np.where(inside, np.minimum(clearance, d), -np.inf)
+    score -= 1e-4 * (1.0 - fracs)[:, None]  # prefer the fuller offset on ties
+    best = score.argmax(axis=0)
+    out = stack[best, np.arange(n)]
+    hopeless = ~np.isfinite(score[best, np.arange(n)])
+    out[hopeless] = ring[hopeless]  # tighter than the tip itself: stay put
+    return out
+
+
+def _delaunay_cap(
+    loops: list[np.ndarray], test_poly: sg.Polygon
+) -> tuple[np.ndarray, np.ndarray]:
+    """Flat cap triangulation that CONFORMS to a dense boundary.
+
+    Earcut is the wrong tool once rings are densified: its fans create
+    zero-area slivers on collinear boundary points, trimesh's processing
+    deletes those, and the rim tears open (production case: 1225 open
+    edges on a plain square). Delaunay over the exact loop vertices plus
+    a coarse interior grid never produces degenerate boundary slivers,
+    and with 2 mm boundary spacing the rim segments are always Delaunay
+    edges — the cap welds to the walls by construction. Triangles are
+    kept if their centroid is inside (or within 0.25 mm of) the polygon,
+    which tolerates the locally self-touching loops of pinched tails.
+    """
+    from scipy.spatial import Delaunay
+
+    from . import meshops
+
+    pts = np.vstack(loops)
+    minx, miny, maxx, maxy = test_poly.bounds
+    step = 6.0
+    gx, gy = np.meshgrid(
+        np.arange(minx + step / 2, maxx, step),
+        np.arange(miny + step / 2, maxy, step),
+    )
+    gp = np.column_stack([gx.ravel(), gy.ravel()])
+    if len(gp):
+        gpts = shapely.points(gp)
+        inside = shapely.contains(test_poly, gpts)
+        clear = shapely.distance(test_poly.boundary, gpts) > step / 2
+        gp = gp[inside & clear]
+    allpts = np.vstack([pts, gp]) if len(gp) else pts
+    tri = Delaunay(allpts)
+    cent = allpts[tri.simplices].mean(axis=1)
+    keep = shapely.dwithin(test_poly, shapely.points(cent), 0.25)
+    return allpts, meshops.ensure_up_normals(allpts, tri.simplices[keep])
 
 
 def extrude_with_roundover(
@@ -256,9 +363,11 @@ def extrude_with_roundover(
 
     The fillet is a quarter circle approximated by 3 loft rings (spec
     allows exactly this): at angle phi the ring is inset by r*(1-cos phi)
-    and raised to z = (T - r) + r*sin phi. The top cap is the polygon
-    inset by the full radius. All rings share vertex count, so walls are
-    clean closed quad strips; caps are earcut-triangulated.
+    and raised to z = (T - r) + r*sin phi. The top cap reuses the last
+    loft ring's exact vertices so the seam welds bit-identically. All
+    rings share vertex count, so walls are clean closed quad strips;
+    caps are earcut-triangulated. Insets are clearance-limited (see
+    _inset_ring_safe) so sharp tails pinch instead of self-intersecting.
     """
     import trimesh
 
@@ -278,16 +387,18 @@ def extrude_with_roundover(
 
     verts: list[np.ndarray] = []
     faces: list[np.ndarray] = []
-    ring_level_start: list[list[int]] = []
+    top_loops: list[np.ndarray] = []  # last-level loop per ring, for the cap
 
     for ring in rings:
         normals = _ring_normals_inward(ring)
         starts = []
+        last_loop = ring
         for z, inset in levels:
             starts.append(sum(len(v) for v in verts))
-            loop = ring + normals * inset
+            loop = _inset_ring_safe(poly, ring, normals, inset)
             verts.append(np.column_stack([loop, np.full(len(ring), z)]))
-        ring_level_start.append(starts)
+            last_loop = loop
+        top_loops.append(last_loop)
         n = len(ring)
         idx = np.arange(n)
         nxt = (idx + 1) % n
@@ -302,31 +413,33 @@ def extrude_with_roundover(
             faces.append(np.column_stack([a0, a1, b1]))
             faces.append(np.column_stack([a0, b1, b0]))
 
-    # Bottom cap (faces down) from the original polygon.
-    v2d, f2d = triangulate_cap(poly)
+    # Bottom cap (faces down) on the original dense rings. Same conforming
+    # triangulation as the top: earcut fans over densified (collinear)
+    # boundary points create zero-area slivers that mesh processing then
+    # deletes, tearing the rim open.
+    rings0 = [np.array(poly.exterior.coords[:-1], dtype=np.float64)]
+    rings0 += [np.array(h.coords[:-1], dtype=np.float64) for h in poly.interiors]
+    v2d, f2d = _delaunay_cap(rings0, poly)
     base = sum(len(v) for v in verts)
     verts.append(np.column_stack([v2d, np.zeros(len(v2d))]))
     faces.append(f2d[:, ::-1] + base)
 
-    # Top cap (faces up) from the polygon inset by the full radius.
-    top_inset = r if r > 1e-6 else 0.0
-    if top_inset > 0.0:
-        top_rings = []
-        for ring in rings:
-            top_rings.append(ring + _ring_normals_inward(ring) * top_inset)
-        top_poly = sg.Polygon(top_rings[0], top_rings[1:])
+    # Top cap (faces up) built directly ON the last loft level's vertices
+    # so the rim welds to the walls by construction. The loop polygon may
+    # be locally self-touching at a pinched tail; a buffer(0)-repaired
+    # COPY is used only as the containment test, never for the vertices.
+    base = sum(len(v) for v in verts)
+    if r > 1e-6:
+        top_poly = sg.Polygon(top_loops[0], top_loops[1:])
         if not top_poly.is_valid:
             top_poly = top_poly.buffer(0)
             if top_poly.is_empty:
                 raise ValueError(
                     "roundover radius too large for this outline; reduce it"
                 )
-            if top_poly.geom_type == "MultiPolygon":
-                top_poly = max(top_poly.geoms, key=lambda g: g.area)
+        v2d, f2d = _delaunay_cap(top_loops, top_poly)
     else:
-        top_poly = poly
-    v2d, f2d = triangulate_cap(top_poly)
-    base = sum(len(v) for v in verts)
+        v2d, f2d = _delaunay_cap(rings0, poly)
     verts.append(np.column_stack([v2d, np.full(len(v2d), thickness)]))
     faces.append(f2d + base)
 
