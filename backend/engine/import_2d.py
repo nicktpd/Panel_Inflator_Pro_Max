@@ -26,6 +26,7 @@ Geometry notes:
 from __future__ import annotations
 
 import math
+import re
 from pathlib import Path
 
 import numpy as np
@@ -82,20 +83,39 @@ def _rings_from_svg(path: str, scale: float) -> list[np.ndarray]:
     return rings
 
 
-def _rings_from_dxf(path: str, scale: float) -> list[np.ndarray]:
-    """Closed rings from DXF LWPOLYLINE/POLYLINE/CIRCLE/ELLIPSE/ARC/SPLINE.
+def _rings_from_dxf(path: str, scale: float) -> tuple[list[np.ndarray], list[dict]]:
+    """Closed rings + text labels from a DXF.
 
-    Entities are flattened through ezdxf's path adaptor at the chordal
-    tolerance. Open entities (lines, open arcs) are skipped: a panel
-    outline must be a closed contour.
+    Outline geometry comes only from LWPOLYLINE/POLYLINE/CIRCLE/ELLIPSE/
+    ARC/SPLINE, flattened through ezdxf's path adaptor at the chordal
+    tolerance. Open entities are skipped: a panel outline must be closed.
+
+    Everything else in the file is tolerated. Annotation (TEXT/MTEXT --
+    panel keys, dimensions, quantities) is deliberately NOT geometry: it
+    is collected as labels [{text, x, y}] so the importer can name parts
+    after their panel key (e.g. a lone "H" inside an outline).
     """
     import ezdxf
     from ezdxf.path import make_path
 
     doc = ezdxf.readfile(path)
     rings: list[np.ndarray] = []
+    labels: list[dict] = []
     for entity in doc.modelspace():
-        if entity.dxftype() not in (
+        kind = entity.dxftype()
+        if kind in ("TEXT", "MTEXT"):
+            try:
+                text = entity.plain_text() if kind == "MTEXT" else entity.dxf.text
+                ins = entity.dxf.insert
+                labels.append({
+                    "text": str(text).strip(),
+                    "x": float(ins.x) * scale,
+                    "y": float(ins.y) * scale,
+                })
+            except Exception:
+                pass
+            continue
+        if kind not in (
             "LWPOLYLINE", "POLYLINE", "CIRCLE", "ELLIPSE", "ARC", "SPLINE",
         ):
             continue
@@ -110,7 +130,7 @@ def _rings_from_dxf(path: str, scale: float) -> list[np.ndarray]:
         if not closed:
             continue
         rings.append(pts * scale)
-    return rings
+    return rings, labels
 
 
 def _clean_ring(ring: np.ndarray) -> np.ndarray | None:
@@ -320,6 +340,56 @@ def extrude_with_roundover(
 
 
 # ---------------------------------------------------------------------------
+# part naming from annotation text
+# ---------------------------------------------------------------------------
+
+_QTY_RE = re.compile(r"^QTY\.?\s*[x×]?\s*(\d+)", re.IGNORECASE)
+# A panel key is a short standalone identifier: "H", "F2", "A-1"...
+_KEY_RE = re.compile(r"^[A-Za-z][A-Za-z0-9\-]{0,3}$")
+
+
+def _name_hint_for(poly: sg.Polygon, labels: list[dict]) -> str | None:
+    """Derive a display name for one outline from nearby annotation text.
+
+    Labels inside the outline win; if none are inside (some drawings put
+    the caption beside the part), the nearest label cluster within one
+    bounding-box diagonal is used. The shortest key-looking string is the
+    panel key; a "QTY n" line becomes a multiplier suffix.
+    """
+    if not labels:
+        return None
+    inside, nearby = [], []
+    minx, miny, maxx, maxy = poly.bounds
+    diag = math.hypot(maxx - minx, maxy - miny)
+    for lab in labels:
+        if not lab["text"]:
+            continue
+        pt = sg.Point(lab["x"], lab["y"])
+        if poly.contains(pt):
+            inside.append(lab)
+        elif poly.exterior.distance(pt) < diag:
+            nearby.append(lab)
+    pool = inside or nearby
+    if not pool:
+        return None
+    key = None
+    qty = None
+    for lab in pool:
+        text = lab["text"]
+        m = _QTY_RE.match(text)
+        if m:
+            qty = int(m.group(1))
+        elif _KEY_RE.match(text) and (key is None or len(text) < len(key)):
+            key = text
+    if key is None:
+        return None
+    name = f"Panel {key.upper()}"
+    if qty and qty > 1:
+        name += f" ×{qty}"
+    return name
+
+
+# ---------------------------------------------------------------------------
 # top-level entry
 # ---------------------------------------------------------------------------
 
@@ -337,10 +407,11 @@ def load_2d_as_parts(
     not apply).
     """
     suffix = Path(path).suffix.lower()
+    labels: list[dict] = []
     if suffix == ".svg":
         rings = _rings_from_svg(path, scale)
     elif suffix == ".dxf":
-        rings = _rings_from_dxf(path, scale)
+        rings, labels = _rings_from_dxf(path, scale)
     else:
         raise ValueError(f"unsupported 2D format: {suffix}")
 
@@ -350,6 +421,10 @@ def load_2d_as_parts(
     polys = rings_to_polygons(rings)
     if not polys:
         raise ValueError("outlines could not be assembled into polygons")
+
+    # Name parts from annotation BEFORE translating, while text and
+    # outlines still share the drawing's coordinate system.
+    hints = [_name_hint_for(poly, labels) for poly in polys]
 
     # Normalize position: whole drawing translated to the positive quadrant.
     minx = min(p.bounds[0] for p in polys)
@@ -363,4 +438,6 @@ def load_2d_as_parts(
         v, f = extrude_with_roundover(poly, thickness, roundover)
         part_arrays.append((v, f))
 
-    return import_stl.describe_parts_from_arrays(part_arrays, hardware_threshold=0)
+    return import_stl.describe_parts_from_arrays(
+        part_arrays, hardware_threshold=0, name_hints=hints
+    )

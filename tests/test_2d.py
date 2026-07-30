@@ -104,6 +104,35 @@ def test_dxf_import():
     assert (rad > 29.0).all()
 
 
+def test_dxf_text_tolerated_and_used_for_names():
+    """Annotation text (panel key, dimensions, QTY) must never become
+    geometry, and the panel-key text names the part."""
+    import ezdxf
+
+    fixtures_gen.FIXTURES.mkdir(exist_ok=True)
+    path = fixtures_gen.FIXTURES / "annotated.dxf"
+    doc = ezdxf.new()
+    msp = doc.modelspace()
+    # Two panels side by side, drawn in inches like the production files.
+    msp.add_lwpolyline([(0, 0), (24, 0), (24, 24), (0, 24)], format="xy", close=True)
+    msp.add_lwpolyline([(30, 0), (82, 0), (30, 8)], format="xy", close=True)
+    # Annotation inside each outline + one label that must NOT match.
+    msp.add_text("F", height=2, dxfattribs={"insert": (12, 14)})
+    msp.add_text('24.00\"x24.00\"', height=1, dxfattribs={"insert": (12, 11)})
+    msp.add_text("QTY 7", height=1, dxfattribs={"insert": (12, 9)})
+    msp.add_text("H", height=1.2, dxfattribs={"insert": (40, 2)})
+    msp.add_text('RIGHT TRIANGLE 52\" X 8\"', height=0.5, dxfattribs={"insert": (40, 1)})
+    doc.saveas(path)
+
+    parts = import_2d.load_2d_as_parts(str(path), scale=25.4, thickness=50.8, roundover=8.0)
+    assert len(parts) == 2, "text must not create extra parts"
+    names = {p.get("name_hint") for p in parts}
+    assert names == {"Panel F ×7", "Panel H"}
+    # Text never becomes geometry: bounds match the outlines only.
+    for p in parts:
+        assert p["bbox_max"][2] == pytest.approx(50.8, abs=1e-3)
+
+
 def test_two_disjoint_outlines_two_parts():
     """Multiple disjoint outlines become multiple parts."""
     fixtures_gen.FIXTURES.mkdir(exist_ok=True)

@@ -243,7 +243,9 @@ def _do_import(job_id: str, project_id: str, filename: str, options_2d: Import2D
     panel_i = 0
     hw_i = 0
     for i, raw in enumerate(parts_raw):
-        if raw["classification"] == "pillow":
+        if raw.get("name_hint"):
+            name = raw["name_hint"]  # e.g. "Panel H" from DXF annotation
+        elif raw["classification"] == "pillow":
             name = f"Panel {panel_i + 1}"
             panel_i += 1
         else:

@@ -86,17 +86,24 @@ def _describe_part(
 
 
 def describe_parts_from_arrays(
-    part_arrays: list[tuple[np.ndarray, np.ndarray]], hardware_threshold: int = 0
+    part_arrays: list[tuple[np.ndarray, np.ndarray]],
+    hardware_threshold: int = 0,
+    name_hints: list[str | None] | None = None,
 ) -> list[dict]:
     """Same classification/metadata for parts built elsewhere (Phase 2).
 
     Extruded 2D outlines are lean meshes (hundreds of faces, not the dense
     CAD tessellations the 10k STL threshold assumes), so by default every
     flat-topped 2D part is pillowable regardless of face count.
+
+    name_hints (parallel to part_arrays) carries display names derived
+    from drawing annotation, e.g. "Panel H" from a DXF panel-key label.
     """
-    parts = [
-        _describe_part(pv.astype(np.float32), pf.astype(np.int32), hardware_threshold)
-        for pv, pf in part_arrays
-    ]
+    parts = []
+    for i, (pv, pf) in enumerate(part_arrays):
+        part = _describe_part(pv.astype(np.float32), pf.astype(np.int32), hardware_threshold)
+        if name_hints is not None and name_hints[i]:
+            part["name_hint"] = name_hints[i]
+        parts.append(part)
     parts.sort(key=lambda p: p["face_count"], reverse=True)
     return parts
