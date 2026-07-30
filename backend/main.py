@@ -11,11 +11,13 @@ from __future__ import annotations
 
 import base64
 import json
+import os
 import shutil
 import threading
 import time
 import uuid
 import webbrowser
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -42,7 +44,20 @@ FRONTEND_DIR = ROOT / "frontend"
 HOST = "127.0.0.1"
 PORT = 8177
 
-app = FastAPI(title="Panel Inflator Pro Max", docs_url="/api/docs")
+# Only a real `main()` launch opens the browser; importing the app (tests,
+# tooling) must not. Set right before uvicorn.run, checked on startup so a
+# failed port bind never opens a tab pointing at a stale server.
+_OPEN_BROWSER_ON_START = False
+
+
+@asynccontextmanager
+async def _lifespan(_app: FastAPI):
+    if _OPEN_BROWSER_ON_START:
+        threading.Timer(0.2, lambda: webbrowser.open(f"http://{HOST}:{PORT}")).start()
+    yield
+
+
+app = FastAPI(title="Panel Inflator Pro Max", docs_url="/api/docs", lifespan=_lifespan)
 
 # --------------------------------------------------------------------------
 # Job registry: tiny in-process background task system with polling.
@@ -117,9 +132,6 @@ def _run_job(kind: str, fn) -> str:
     return job_id
 
 
-_VERSION_CACHE: dict | None = None
-
-
 def _git(args: list[str]) -> str | None:
     import subprocess
 
@@ -132,6 +144,25 @@ def _git(args: list[str]) -> str | None:
         return None
 
 
+def _build_info() -> dict:
+    is_git = (ROOT / ".git").exists() and _git(["rev-parse", "HEAD"]) is not None
+    if is_git:
+        return {
+            "install": "git",
+            "hash": _git(["rev-parse", "--short", "HEAD"]) or "unknown",
+            "date": _git(["log", "-1", "--format=%cd", "--date=short"]) or "",
+            "subject": _git(["log", "-1", "--format=%s"]) or "",
+            "branch": _git(["rev-parse", "--abbrev-ref", "HEAD"]) or "",
+        }
+    return {"install": "zip", "hash": "unknown", "date": "", "subject": "", "branch": ""}
+
+
+# The build this PROCESS is running, captured at startup. The checkout can
+# move underneath a live server (updater / another session pulls), so the
+# on-disk hash is re-read per request to detect that skew.
+_RUNNING_BUILD = _build_info()
+
+
 @app.get("/api/version")
 def get_version():
     """Report the running build so the user can confirm they're current.
@@ -139,25 +170,28 @@ def get_version():
     Reads the checked-out git commit (short hash, date, subject). A ZIP
     install with no git returns install='zip' and hash='unknown', which is
     itself the answer to 'why isn't my app updating' — ZIP installs can't
-    self-update. Cached after the first call; commit only changes on a
-    pull, which restarts the server anyway.
+    self-update. ``stale`` is true when the code on disk is newer than the
+    process serving this request (updated while running): a restart is
+    needed before the new features work.
     """
-    global _VERSION_CACHE
-    if _VERSION_CACHE is not None:
-        return _VERSION_CACHE
-    is_git = (ROOT / ".git").exists() and _git(["rev-parse", "HEAD"]) is not None
-    if is_git:
-        info = {
-            "install": "git",
-            "hash": _git(["rev-parse", "--short", "HEAD"]) or "unknown",
-            "date": _git(["log", "-1", "--format=%cd", "--date=short"]) or "",
-            "subject": _git(["log", "-1", "--format=%s"]) or "",
-            "branch": _git(["rev-parse", "--abbrev-ref", "HEAD"]) or "",
-        }
-    else:
-        info = {"install": "zip", "hash": "unknown", "date": "", "subject": "", "branch": ""}
-    _VERSION_CACHE = info
+    info = dict(_RUNNING_BUILD)
+    disk = _git(["rev-parse", "--short", "HEAD"]) if info["install"] == "git" else None
+    info["disk_hash"] = disk or info["hash"]
+    info["stale"] = bool(disk) and disk != info["hash"]
     return info
+
+
+@app.post("/api/shutdown")
+def shutdown():
+    """Exit this server so a newer launch can take the port.
+
+    Called by ``main()`` in the next launch when it finds the port already
+    occupied — the usual cause is a pre-update server still running after
+    the auto-updater pulled new code. Local-only app (bound to 127.0.0.1),
+    so anything that can reach this could already kill the process.
+    """
+    threading.Timer(0.3, lambda: os._exit(0)).start()
+    return {"ok": True}
 
 
 @app.get("/api/jobs/{job_id}")
@@ -665,11 +699,56 @@ def delete_project(project_id: str):
 app.mount("/", StaticFiles(directory=str(FRONTEND_DIR), html=True), name="frontend")
 
 
+def _port_in_use() -> bool:
+    import socket
+
+    with socket.socket() as s:
+        s.settimeout(0.5)
+        return s.connect_ex((HOST, PORT)) == 0
+
+
+def _evict_stale_server() -> bool:
+    """Free the port if an earlier instance still holds it; True when free.
+
+    Without this, launching after an update silently loses: the new server
+    can't bind, while the old process keeps serving the NEW frontend files
+    from disk against its OLD routes — every new API call 404/405s.
+    """
+    if not _port_in_use():
+        return True
+    print(f"Another Panel Inflator server holds port {PORT}; asking it to exit ...")
+    import urllib.request
+
+    try:
+        urllib.request.urlopen(
+            urllib.request.Request(f"http://{HOST}:{PORT}/api/shutdown", method="POST"),
+            timeout=3,
+        )
+    except Exception:
+        pass  # older build without /api/shutdown, or not our app at all
+    for _ in range(20):
+        if not _port_in_use():
+            print("Old server closed; starting the updated one.")
+            return True
+        time.sleep(0.5)
+    return False
+
+
 def main() -> None:
+    global _OPEN_BROWSER_ON_START
     import uvicorn
 
     PROJECTS_DIR.mkdir(exist_ok=True)
-    threading.Timer(1.2, lambda: webbrowser.open(f"http://{HOST}:{PORT}")).start()
+    if not _evict_stale_server():
+        bar = "=" * 52
+        print(bar)
+        print(f"  [ERROR] Port {PORT} is in use and the app there won't exit.")
+        print("  An older Panel Inflator server is probably still running.")
+        print("  Close every Panel Inflator terminal/console window (or")
+        print(f"  kill whatever is using port {PORT}), then run this again.")
+        print(bar)
+        raise SystemExit(1)
+    _OPEN_BROWSER_ON_START = True
     uvicorn.run(app, host=HOST, port=PORT, log_level="info")
 
 

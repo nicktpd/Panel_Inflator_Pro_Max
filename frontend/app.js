@@ -43,9 +43,18 @@ function setStatus(msg, { progress = null, error = false } = {}) {
 async function api(path, opts = {}) {
   const r = await fetch(path, opts);
   if (!r.ok) {
-    let detail = r.statusText;
-    try { detail = (await r.json()).detail || detail; } catch { /* not json */ }
-    throw new Error(detail);
+    let detail = null;
+    try { detail = (await r.json()).detail; } catch { /* not json */ }
+    // A non-JSON error from an /api path means the request fell through to
+    // the static file server: the backend process predates this route (it
+    // was updated on disk while running). "Method Not Allowed" alone is
+    // useless to the user, so say what to actually do.
+    if (!detail && path.startsWith('/api/')) {
+      detail = 'the app server is running an older build than the files on disk. '
+        + 'Close every Panel Inflator terminal/console window, then start the app '
+        + 'again with run.bat (or ./run.sh)';
+    }
+    throw new Error(detail || r.statusText);
   }
   return r.json();
 }
@@ -637,6 +646,12 @@ window.addEventListener('keydown', (e) => {
       badge.classList.add('zip');
       badge.title = 'This copy was installed from a ZIP, so it cannot self-update. '
         + 'Re-download the latest ZIP, or install with git clone for automatic updates.';
+    } else if (v.stale) {
+      badge.textContent = `restart needed — running ${v.hash}, downloaded ${v.disk_hash}`;
+      badge.classList.add('zip'); // same red styling
+      badge.title = 'An update was downloaded while the server was running, so this '
+        + 'window is still served by the old build. Close every Panel Inflator '
+        + 'terminal/console window and start the app again with run.bat / run.sh.';
     } else {
       badge.textContent = `build ${v.hash} · ${v.date}`;
       badge.title = `${v.subject}\n(${v.branch} @ ${v.hash}, ${v.date})\n`
@@ -648,8 +663,12 @@ window.addEventListener('keydown', (e) => {
       window.open('https://github.com/nicktpd/Panel_Inflator_Pro_Max/commits/main', '_blank');
     };
     console.log('[Panel Inflator] running build:', v);
-  } catch {
-    badge.textContent = 'build ?';
+  } catch (e) {
+    // Most likely an old (pre-badge) server still running behind newer
+    // frontend files — api() already phrases that case for the user.
+    badge.textContent = 'build ? — old server running, restart the app';
+    badge.classList.add('zip');
+    badge.title = e.message;
   }
 })();
 
