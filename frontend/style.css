@@ -1,0 +1,208 @@
+/* Panel Inflator Pro Max — dark, dense, workshop-tool aesthetic. */
+
+:root {
+  --bg: #111318;
+  --bg-panel: #1a1d24;
+  --bg-input: #22262f;
+  --border: #2c313c;
+  --text: #cfd3db;
+  --text-dim: #7d8494;
+  --accent: #c9a86a;      /* upholstery brass */
+  --accent-text: #16130c;
+  --select: #e8b84b;
+  --ok: #7fbf7f;
+  --err: #d47070;
+  font-size: 13px;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0; height: 100%;
+  background: var(--bg); color: var(--text);
+  font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
+  overflow: hidden;
+}
+
+/* ---------- top bar ---------- */
+
+#topbar {
+  display: flex; align-items: center; gap: 8px;
+  height: 44px; padding: 0 12px;
+  background: var(--bg-panel); border-bottom: 1px solid var(--border);
+  user-select: none;
+}
+#logo { font-weight: 700; letter-spacing: 1px; font-size: 13px; }
+#logo span { color: var(--accent); }
+#project-name {
+  margin-left: 14px; color: var(--text-dim);
+  max-width: 26ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.spacer { flex: 1; }
+.sep { width: 1px; height: 22px; background: var(--border); margin: 0 4px; }
+
+.btn {
+  background: var(--bg-input); color: var(--text);
+  border: 1px solid var(--border); border-radius: 4px;
+  padding: 5px 12px; cursor: pointer; font-size: 12px;
+}
+.btn:hover { border-color: var(--accent); }
+.btn.accent { background: var(--accent); color: var(--accent-text); border-color: var(--accent); font-weight: 600; }
+.btn.accent:hover { filter: brightness(1.1); }
+.btn:disabled { opacity: 0.45; cursor: default; }
+.btn.active { outline: 2px solid var(--select); }
+
+.mini {
+  background: none; border: 1px solid var(--border); color: var(--text-dim);
+  border-radius: 3px; font-size: 10px; padding: 1px 6px; cursor: pointer;
+  float: right; margin-top: 1px;
+}
+.mini:hover { color: var(--accent); border-color: var(--accent); }
+
+.toggle-group { display: flex; border: 1px solid var(--border); border-radius: 4px; overflow: hidden; }
+.toggle-group button {
+  background: var(--bg-input); color: var(--text-dim); border: none;
+  padding: 5px 10px; cursor: pointer; font-size: 12px;
+}
+.toggle-group button.on { background: var(--accent); color: var(--accent-text); font-weight: 600; }
+
+select, input[type="number"] {
+  background: var(--bg-input); color: var(--text);
+  border: 1px solid var(--border); border-radius: 4px; padding: 4px 6px;
+  font-size: 12px;
+}
+
+/* ---------- layout ---------- */
+
+#main { display: flex; height: calc(100% - 44px - 28px); }
+
+#sidebar {
+  width: 300px; min-width: 300px; overflow-y: auto;
+  background: var(--bg-panel); border-right: 1px solid var(--border);
+  padding: 8px;
+}
+.panel { margin-bottom: 10px; border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px; }
+.panel h2 {
+  margin: 0 0 8px; font-size: 11px; text-transform: uppercase;
+  letter-spacing: 1px; color: var(--text-dim);
+}
+
+#viewport { position: relative; flex: 1; min-width: 0; }
+#canvas3d { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+
+/* ---------- part list ---------- */
+
+.part-list { list-style: none; margin: 0; padding: 0; max-height: 260px; overflow-y: auto; }
+.part-list li {
+  display: flex; align-items: center; gap: 6px;
+  padding: 5px 6px; border-radius: 4px; cursor: pointer; margin-bottom: 2px;
+}
+.part-list li:hover { background: var(--bg-input); }
+.part-list li.selected { background: #2c2a1f; outline: 1px solid var(--select); }
+.part-list .pname { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.part-list .pfaces { color: var(--text-dim); font-size: 10px; }
+.part-list .chip {
+  font-size: 9px; padding: 1px 6px; border-radius: 8px; text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+.chip.pillow { background: #3a3325; color: var(--accent); }
+.chip.passthrough { background: #262b33; color: var(--text-dim); }
+.part-list .dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+
+/* ---------- parameter sliders ---------- */
+
+.param-row { margin-bottom: 8px; }
+.param-row label {
+  display: flex; justify-content: space-between;
+  font-size: 11px; color: var(--text-dim); margin-bottom: 2px;
+}
+.param-row label .val { color: var(--text); font-variant-numeric: tabular-nums; }
+.param-row input[type="range"] { width: 100%; accent-color: var(--accent); height: 18px; }
+
+.param-actions { display: flex; gap: 6px; margin-top: 8px; }
+.param-actions .btn { flex: 1; padding: 4px 6px; font-size: 11px; }
+
+.check-row { display: flex; align-items: center; gap: 8px; margin: 8px 0 2px; font-size: 12px; }
+.check-row input { accent-color: var(--accent); }
+
+/* ---------- drop zone / empty hint ---------- */
+
+#dropzone {
+  position: absolute; inset: 0; z-index: 30;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(17, 19, 24, 0.85); border: 2px dashed var(--accent);
+  font-size: 20px; color: var(--accent); pointer-events: none;
+}
+#dropzone.hidden { display: none; }
+
+#empty-hint {
+  position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+  pointer-events: none;
+}
+.hint-card { text-align: center; color: var(--text-dim); }
+.hint-card h1 { font-size: 20px; font-weight: 500; color: var(--text); margin: 0 0 8px; }
+.hint-card .keys { margin-top: 18px; font-size: 11px; }
+.hint-card b {
+  border: 1px solid var(--border); border-radius: 3px; padding: 1px 6px;
+  background: var(--bg-input); color: var(--text);
+}
+
+/* ---------- morph slider ---------- */
+
+#morph-wrap {
+  position: absolute; bottom: 16px; left: 50%; transform: translateX(-50%);
+  display: flex; align-items: center; gap: 10px;
+  background: rgba(26, 29, 36, 0.9); border: 1px solid var(--border);
+  border-radius: 20px; padding: 6px 16px; z-index: 10;
+}
+#morph-slider { width: 220px; accent-color: var(--accent); }
+.morph-label { font-size: 10px; text-transform: uppercase; letter-spacing: 1px; color: var(--text-dim); }
+
+/* ---------- status bar ---------- */
+
+#statusbar {
+  height: 28px; display: flex; align-items: center; gap: 12px;
+  background: var(--bg-panel); border-top: 1px solid var(--border); padding: 0 12px;
+}
+#progress-track {
+  width: 180px; height: 5px; background: var(--bg-input); border-radius: 3px; overflow: hidden;
+}
+#progress-fill {
+  width: 0%; height: 100%; background: var(--accent); border-radius: 3px;
+  transition: width 0.2s;
+}
+#status-text { color: var(--text-dim); font-size: 11px; }
+#status-text.err { color: var(--err); }
+
+/* ---------- dialogs ---------- */
+
+dialog {
+  background: var(--bg-panel); color: var(--text);
+  border: 1px solid var(--border); border-radius: 8px; padding: 18px 20px;
+  min-width: 320px;
+}
+dialog::backdrop { background: rgba(0, 0, 0, 0.6); }
+dialog h3 { margin: 0 0 12px; font-size: 14px; }
+dialog label { display: block; margin-bottom: 10px; font-size: 12px; color: var(--text-dim); }
+dialog label input, dialog label select { display: block; width: 100%; margin-top: 3px; }
+dialog label small { display: block; color: var(--text-dim); font-size: 10px; margin-top: 2px; }
+dialog menu { display: flex; justify-content: flex-end; gap: 8px; margin: 14px 0 0; padding: 0; }
+
+.project-list { list-style: none; margin: 0; padding: 0; max-height: 300px; overflow-y: auto; min-width: 380px; }
+.project-list li {
+  display: flex; gap: 10px; align-items: baseline; padding: 7px 8px;
+  border-radius: 4px; cursor: pointer;
+}
+.project-list li:hover { background: var(--bg-input); }
+.project-list .meta { color: var(--text-dim); font-size: 10px; }
+.project-list .del { margin-left: auto; }
+
+/* ---------- brush (Phase 3) ---------- */
+
+#brush-controls .param-row input[type="range"] { accent-color: var(--select); }
+.brush-mode-row { display: flex; gap: 4px; margin-bottom: 8px; }
+.brush-mode-row .btn { flex: 1; padding: 3px 4px; font-size: 10px; }
+
+::-webkit-scrollbar { width: 9px; }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 5px; }
+::-webkit-scrollbar-track { background: transparent; }

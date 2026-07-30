@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Panel Inflator Pro Max</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect x='2' y='14' width='28' height='6' rx='3' fill='%23c9a86a'/><path d='M4 14 Q16 2 28 14' fill='%23e0c493'/></svg>">
+<link rel="stylesheet" href="style.css">
+<script type="importmap">
+{
+  "imports": {
+    "three": "./vendor/three.module.js"
+  }
+}
+</script>
+</head>
+<body>
+<header id="topbar">
+  <div id="logo">PANEL&nbsp;INFLATOR&nbsp;<span>PRO&nbsp;MAX</span></div>
+  <div id="project-name" title="Current project">no project</div>
+  <div class="spacer"></div>
+
+  <button id="btn-import" class="btn" title="Import STL / SVG / DXF">Import</button>
+  <button id="btn-projects" class="btn" title="Open a saved project">Projects</button>
+
+  <div class="sep"></div>
+
+  <div class="toggle-group" id="units-toggle" title="Display units (data stays mm)">
+    <button data-u="mm" class="on">mm</button><button data-u="inch">in</button>
+  </div>
+
+  <div class="sep"></div>
+
+  <button id="btn-before-after" class="btn" title="Before / After (B)">Before / After</button>
+
+  <div class="sep"></div>
+
+  <select id="export-res" title="Export raster resolution">
+    <option value="2.0" selected>Full res (2 mm)</option>
+    <option value="4.0">Preview res (4 mm)</option>
+  </select>
+  <button id="btn-export-stl" class="btn accent" title="Export binary STL">STL</button>
+  <button id="btn-export-glb" class="btn accent" title="Export GLB">GLB</button>
+</header>
+
+<div id="main">
+  <aside id="sidebar">
+    <section class="panel">
+      <h2>Parts</h2>
+      <ul id="part-list" class="part-list"></ul>
+    </section>
+
+    <section class="panel">
+      <h2>Global pillow <button id="btn-reset-global" class="mini" title="Restore defaults">defaults</button></h2>
+      <div id="global-params"></div>
+    </section>
+
+    <section class="panel" id="part-panel-section" hidden>
+      <h2 id="part-panel-title">Selected part</h2>
+      <div id="part-params"></div>
+    </section>
+
+    <section class="panel" id="brush-section" hidden>
+      <h2>Loft brush</h2>
+      <div id="brush-controls"></div>
+    </section>
+  </aside>
+
+  <div id="viewport">
+    <canvas id="canvas3d"></canvas>
+
+    <div id="dropzone" class="hidden">
+      <div>Drop STL / SVG / DXF to import</div>
+    </div>
+
+    <div id="empty-hint">
+      <div class="hint-card">
+        <h1>Drop a flat panel file here</h1>
+        <p>STL from CAD, or a 2D outline (SVG / DXF).<br>
+           It comes back upholstered.</p>
+        <p class="keys"><b>R</b> reset view &nbsp;·&nbsp; <b>B</b> before/after</p>
+      </div>
+    </div>
+
+    <div id="morph-wrap" hidden>
+      <span class="morph-label">flat</span>
+      <input type="range" id="morph-slider" min="0" max="1" step="0.01" value="1">
+      <span class="morph-label">pillowed</span>
+    </div>
+  </div>
+</div>
+
+<footer id="statusbar">
+  <div id="progress-track"><div id="progress-fill"></div></div>
+  <div id="status-text">ready</div>
+</footer>
+
+<input type="file" id="file-input" accept=".stl,.svg,.dxf" hidden>
+
+<dialog id="dialog-2d">
+  <form method="dialog">
+    <h3>2D outline import</h3>
+    <label>Units in file
+      <select id="d2-units">
+        <option value="1.0">millimetres (1:1)</option>
+        <option value="25.4">inches (× 25.4)</option>
+        <option value="10.0">centimetres (× 10)</option>
+        <option value="0.26458333">SVG px at 96 dpi (× 0.2646)</option>
+        <option value="custom">custom scale…</option>
+      </select>
+    </label>
+    <label id="d2-custom-wrap" hidden>Custom scale (unit → mm)
+      <input type="number" id="d2-custom" value="1.0" step="any" min="0.0001">
+    </label>
+    <label>Base thickness (mm)
+      <input type="number" id="d2-thickness" value="50.8" step="0.1" min="1">
+      <small>rigid core before pillowing (50.8 = 2″)</small>
+    </label>
+    <label>Edge roundover (mm)
+      <input type="number" id="d2-roundover" value="8" step="0.5" min="0">
+      <small>fillet on the top perimeter edge</small>
+    </label>
+    <menu>
+      <button value="cancel" class="btn">Cancel</button>
+      <button value="ok" class="btn accent" id="d2-ok">Import</button>
+    </menu>
+  </form>
+</dialog>
+
+<dialog id="dialog-projects">
+  <h3>Saved projects</h3>
+  <ul id="project-list" class="project-list"></ul>
+  <menu><button class="btn" onclick="this.closest('dialog').close()">Close</button></menu>
+</dialog>
+
+<script type="module" src="app.js"></script>
+</body>
+</html>
