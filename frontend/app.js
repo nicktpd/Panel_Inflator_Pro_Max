@@ -16,7 +16,12 @@ const state = {
 };
 
 const viewer = new Viewer($('canvas3d'));
-const brush = initBrush(viewer, state, schedulePreview);
+const brush = initBrush(viewer, {
+  api,
+  getProject: () => state.project,
+  schedulePreview: () => schedulePreview(),
+  setStatus: (m, o) => setStatus(m, o),
+});
 
 // ---------------------------------------------------------------------------
 // status bar

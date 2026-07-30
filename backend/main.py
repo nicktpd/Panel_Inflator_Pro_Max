@@ -9,6 +9,7 @@ Binds to 127.0.0.1 only — this is a local tool, never expose it.
 """
 from __future__ import annotations
 
+import base64
 import json
 import shutil
 import threading
@@ -22,6 +23,7 @@ import numpy as np
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
 
 from .engine import import_stl, preview
 from .models import (
@@ -187,14 +189,20 @@ def _effective_params(project: Project, part: PartInfo) -> dict:
     return p.model_dump()
 
 
-def _load_mask(project: Project, part: PartInfo) -> np.ndarray | None:
+def _load_mask(project: Project, part: PartInfo) -> dict | None:
+    """Load a painted loft mask as a world-anchored dict for the engine."""
     if not part.mask_file:
         return None
     mpath = PROJECTS_DIR / project.id / "masks" / part.mask_file
     if not mpath.exists():
         return None
     with np.load(mpath) as z:
-        return z["mask"].astype(np.float64)
+        return {
+            "grid": z["mask"].astype(np.float64),
+            "xmin": float(z["xmin"]),
+            "ymin": float(z["ymin"]),
+            "res": float(z["res"]),
+        }
 
 
 # --------------------------------------------------------------------------
@@ -477,6 +485,96 @@ def download_file(project_id: str, name: str):
     if not path.exists():
         raise HTTPException(404, "export not found (it may have been pruned; export again)")
     return FileResponse(path, filename=name, media_type="application/octet-stream")
+
+
+# --------------------------------------------------------------------------
+# Phase 3: loft-multiplier masks (paint-to-loft brushing)
+# --------------------------------------------------------------------------
+
+
+class MaskPayload(BaseModel):
+    w: int
+    h: int
+    xmin: float
+    ymin: float
+    res: float
+    data_b64: str  # little-endian float32, h*w values, row-major
+
+
+def _blank_mask_meta(part: PartInfo) -> dict:
+    """Grid metadata for a not-yet-painted part, matching the preview
+    raster geometry (same +3 cell / 1-cell-border convention)."""
+    res = preview.PREVIEW_RES
+    xmin, ymin = float(part.bbox_min[0]), float(part.bbox_min[1])
+    nx = int(np.ceil((part.bbox_max[0] - xmin) / res)) + 3
+    ny = int(np.ceil((part.bbox_max[1] - ymin) / res)) + 3
+    return {"w": nx, "h": ny, "xmin": xmin, "ymin": ymin, "res": res, "data_b64": None}
+
+
+@app.get("/api/projects/{project_id}/parts/{part_id}/mask")
+def get_mask(project_id: str, part_id: int):
+    project = _load_project(project_id)
+    part = next((p for p in project.parts if p.id == part_id), None)
+    if part is None:
+        raise HTTPException(404, "part not found")
+    mask = _load_mask(project, part)
+    if mask is None:
+        return _blank_mask_meta(part)
+    grid = mask["grid"].astype("<f4")
+    return {
+        "w": grid.shape[1],
+        "h": grid.shape[0],
+        "xmin": mask["xmin"],
+        "ymin": mask["ymin"],
+        "res": mask["res"],
+        "data_b64": base64.b64encode(grid.tobytes()).decode(),
+    }
+
+
+@app.put("/api/projects/{project_id}/parts/{part_id}/mask")
+def put_mask(project_id: str, part_id: int, payload: MaskPayload):
+    project = _load_project(project_id)
+    part = next((p for p in project.parts if p.id == part_id), None)
+    if part is None:
+        raise HTTPException(404, "part not found")
+    if payload.w < 1 or payload.h < 1 or payload.w * payload.h > 4_000_000:
+        raise HTTPException(400, "mask dimensions out of range")
+    try:
+        data = np.frombuffer(base64.b64decode(payload.data_b64), dtype="<f4")
+    except Exception:
+        raise HTTPException(400, "bad mask data")
+    if data.size != payload.w * payload.h:
+        raise HTTPException(400, f"expected {payload.w * payload.h} values, got {data.size}")
+    grid = np.clip(data.reshape(payload.h, payload.w), 0.0, 4.0)
+
+    mdir = PROJECTS_DIR / project_id / "masks"
+    mdir.mkdir(parents=True, exist_ok=True)
+    fname = f"part{part_id}.npz"
+    np.savez_compressed(
+        mdir / fname,
+        mask=grid.astype(np.float32),
+        xmin=payload.xmin,
+        ymin=payload.ymin,
+        res=payload.res,
+    )
+    part.mask_file = fname
+    part.mask_version += 1
+    _save_project(project)
+    return {"ok": True, "mask_version": part.mask_version}
+
+
+@app.delete("/api/projects/{project_id}/parts/{part_id}/mask")
+def delete_mask(project_id: str, part_id: int):
+    project = _load_project(project_id)
+    part = next((p for p in project.parts if p.id == part_id), None)
+    if part is None:
+        raise HTTPException(404, "part not found")
+    if part.mask_file:
+        (PROJECTS_DIR / project_id / "masks" / part.mask_file).unlink(missing_ok=True)
+        part.mask_file = None
+        part.mask_version += 1
+        _save_project(project)
+    return {"ok": True, "mask_version": part.mask_version}
 
 
 @app.delete("/api/projects/{project_id}")

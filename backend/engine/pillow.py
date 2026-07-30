@@ -70,8 +70,11 @@ def pillow_panel(
     res : raster resolution in mm/cell (2.0 export, 4.0 preview).
     grid_step : spacing in mm of the regenerated top grid (6 export,
         ~10 preview). Coarser = fewer triangles, faster, softer detail.
-    mask : optional loft-multiplier grid (any shape; bilinearly resampled
-        onto this panel's raster). 1.0 = normal loft, 0.0 = flat.
+    mask : optional loft-multiplier field. Either a dict
+        {"grid": 2d array, "xmin": float, "ymin": float, "res": float}
+        (world-anchored -- painted at any resolution, resampled here by
+        world position) or a bare 2d array assumed to span this panel's
+        raster. 1.0 = normal loft, 0.0 = flat, >1 = extra loft.
     seed : RNG seed for footprint sampling (fixed for reproducibility).
 
     Returns
@@ -100,8 +103,9 @@ def pillow_panel(
     dist_raw, dist = meshops.distance_field(fp, sigma)
     prof = meshops.crown_profile(dist, crown, dref, exp)
 
-    if mask is not None and mask.size:
-        prof = prof * _resample_mask(mask, prof.shape)
+    mask_grid = _mask_on_raster(mask, fp)
+    if mask_grid is not None:
+        prof = prof * mask_grid
         # Upholstery never creases: soften whatever the brush did.
         prof = ndimage.gaussian_filter(prof, sigma=MASK_BLUR_SIGMA)
 
@@ -149,27 +153,31 @@ def pillow_panel(
     return meshops.compact(all_v, all_f)
 
 
-def _resample_mask(mask: np.ndarray, shape: tuple[int, int]) -> np.ndarray:
-    """Bilinearly resample a mask grid onto a raster of ``shape``.
+def _mask_on_raster(mask, fp) -> np.ndarray | None:
+    """Resample a painted mask onto the panel's current raster.
 
-    Masks are painted at whatever resolution the preview raster had; the
-    export raster is finer, so the mask is stretched to cover the same
-    world-space footprint (both rasters share xmin/ymin and cover the
-    same panel bounds, so a pure index-space stretch is correct to within
-    half a cell -- far below the smoothing radius).
+    World-anchored masks (dicts with their own xmin/ymin/res) are sampled
+    by world position, so a mask painted on the 4 mm preview raster lands
+    exactly on the 2 mm export raster. Grid convention on both sides:
+    cell (row, col) is centred at (xmin + (col-1)*res, ymin + (row-1)*res)
+    -- the same 1-cell border used by FootprintRaster.
     """
-    mask = np.asarray(mask, dtype=np.float64)
-    if mask.shape == tuple(shape):
-        return mask
-    zy = shape[0] / mask.shape[0]
-    zx = shape[1] / mask.shape[1]
-    out = ndimage.zoom(mask, (zy, zx), order=1, grid_mode=True, mode="nearest")
-    # zoom output shape can be off by one; pad/crop to exact.
-    out = out[: shape[0], : shape[1]]
-    if out.shape != tuple(shape):
-        out = np.pad(
-            out,
-            ((0, shape[0] - out.shape[0]), (0, shape[1] - out.shape[1])),
-            mode="edge",
-        )
-    return out
+    if mask is None:
+        return None
+    if isinstance(mask, np.ndarray):
+        # Bare array: assume it spans this panel's raster extent.
+        scale = mask.shape[0] / fp.grid.shape[0] if mask.shape[0] else 1.0
+        mask = {"grid": mask, "xmin": fp.xmin, "ymin": fp.ymin,
+                "res": fp.res / max(scale, 1e-9)}
+    grid = np.asarray(mask["grid"], dtype=np.float64)
+    if not grid.size:
+        return None
+    ny, nx = fp.grid.shape
+    rows = np.arange(ny, dtype=np.float64)
+    cols = np.arange(nx, dtype=np.float64)
+    world_y = fp.ymin + (rows - 1) * fp.res
+    world_x = fp.xmin + (cols - 1) * fp.res
+    mrow = (world_y - mask["ymin"]) / mask["res"] + 1
+    mcol = (world_x - mask["xmin"]) / mask["res"] + 1
+    mm, cc = np.meshgrid(mrow, mcol, indexing="ij")
+    return ndimage.map_coordinates(grid, [mm, cc], order=1, mode="nearest")

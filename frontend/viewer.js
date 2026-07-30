@@ -13,6 +13,8 @@ export class Viewer {
   constructor(canvas) {
     this.canvas = canvas;
     this.onSelect = null;          // callback(partId | null)
+    this.onAfterLoaded = null;     // callback() when the after-mesh reloads
+    this.pickEnabled = true;       // brush mode suppresses click-select
     this.selectedPartId = null;
     this.morphT = 1.0;             // 0 = flat original, 1 = pillowed
     this.beforeGroup = null;
@@ -127,7 +129,37 @@ export class Viewer {
     if (old) this._dispose(old);   // swap after load: no flicker
     this._applyMorph();
     this._applySelection();
+    if (this.onAfterLoaded) this.onAfterLoaded();
   }
+
+  /** All meshes of one part in the after (pillowed) group. */
+  partMeshes(partId) {
+    const out = [];
+    if (this.afterGroup) {
+      this.afterGroup.traverse((o) => {
+        if (o.isMesh && o.userData.partId === partId) out.push(o);
+      });
+    }
+    return out;
+  }
+
+  /** Raycast the after-group at client coords, optionally one part only. */
+  raycastAt(clientX, clientY, partId = null) {
+    if (!this.afterGroup) return null;
+    const rect = this.canvas.getBoundingClientRect();
+    const ndc = new THREE.Vector2(
+      ((clientX - rect.left) / rect.width) * 2 - 1,
+      -((clientY - rect.top) / rect.height) * 2 + 1
+    );
+    this.raycaster.setFromCamera(ndc, this.camera);
+    const hits = this.raycaster.intersectObject(this.afterGroup, true);
+    const hit = hits.find(
+      (h) => h.object.isMesh && (partId === null || h.object.userData.partId === partId)
+    );
+    return hit || null;
+  }
+
+  setRotateEnabled(v) { this.controls.enableRotate = v; }
 
   clear() {
     if (this.beforeGroup) this._dispose(this.beforeGroup);
@@ -187,6 +219,7 @@ export class Viewer {
 
   _maybePick(e) {
     // Ignore drags (orbiting) — only a clean click selects.
+    if (!this.pickEnabled) { this._downXY = null; return; }
     if (!this._downXY) return;
     const dx = e.clientX - this._downXY[0];
     const dy = e.clientY - this._downXY[1];
