@@ -75,7 +75,14 @@ async function importFile(file) {
   let options = null;
   const ext = file.name.toLowerCase().split('.').pop();
   if (ext === 'svg' || ext === 'dxf') {
-    options = await ask2DOptions();
+    // Kick off the outline extraction so the dialog can show the shape
+    // we actually parsed from the file before the user commits.
+    const previewPromise = (async () => {
+      const fd = new FormData();
+      fd.append('file', file);
+      return api('/api/inspect2d', { method: 'POST', body: fd });
+    })();
+    options = await ask2DOptions(previewPromise);
     if (options === null) return; // cancelled
   }
 
@@ -93,24 +100,128 @@ async function importFile(file) {
   }
 }
 
-function ask2DOptions() {
+function currentScale() {
+  const unitsSel = $('d2-units');
+  return unitsSel.value === 'custom'
+    ? parseFloat($('d2-custom').value) || 1.0
+    : parseFloat(unitsSel.value);
+}
+
+function ask2DOptions(previewPromise) {
   const dlg = $('dialog-2d');
   const unitsSel = $('d2-units');
   const customWrap = $('d2-custom-wrap');
-  unitsSel.onchange = () => { customWrap.hidden = unitsSel.value !== 'custom'; };
+  const statusEl = $('d2-preview-status');
+
+  // State: outlines arrive async; the canvas re-renders whenever the
+  // unit factor changes so the dimension readout stays correct.
+  let outlines = null;
+  const rerender = () => {
+    if (outlines) drawOutlinePreview(outlines, currentScale());
+    renderPartDims(outlines, currentScale());
+  };
+
+  unitsSel.onchange = () => {
+    customWrap.hidden = unitsSel.value !== 'custom';
+    rerender();
+  };
+  $('d2-custom').oninput = rerender;
+
+  // Reset preview UI.
+  statusEl.textContent = 'reading outline…';
+  statusEl.classList.remove('err', 'hidden');
+  $('d2-parts').innerHTML = '';
+  const ctx = $('d2-preview').getContext('2d');
+  ctx.clearRect(0, 0, $('d2-preview').width, $('d2-preview').height);
+
+  previewPromise.then((res) => {
+    outlines = res.outlines;
+    statusEl.classList.add('hidden');
+    rerender();
+  }).catch((e) => {
+    statusEl.textContent = `couldn't read outline: ${e.message}`;
+    statusEl.classList.add('err');
+    statusEl.classList.remove('hidden');
+  });
+
   return new Promise((resolve) => {
     dlg.onclose = () => {
       if (dlg.returnValue !== 'ok') return resolve(null);
-      const scale = unitsSel.value === 'custom'
-        ? parseFloat($('d2-custom').value) || 1.0
-        : parseFloat(unitsSel.value);
       resolve({
-        scale,
+        scale: currentScale(),
         thickness: parseFloat($('d2-thickness').value) || 50.8,
         roundover: parseFloat($('d2-roundover').value) || 0,
       });
     };
     dlg.showModal();
+  });
+}
+
+const PREVIEW_COLORS = ['#c9a86a', '#8fb6d9', '#a3c98f', '#d99a8f', '#bfa3d9', '#d9c98f'];
+
+// Draw the extracted outline(s) on the dialog canvas: exterior filled
+// with holes punched (even-odd), auto-fit with a small margin, y flipped
+// so it matches how the panel sits (y up).
+function drawOutlinePreview(outlines, scale) {
+  const canvas = $('d2-preview');
+  const ctx = canvas.getContext('2d');
+  const W = canvas.width, H = canvas.height, pad = 16;
+  ctx.clearRect(0, 0, W, H);
+  if (!outlines || !outlines.length) return;
+
+  let minx = Infinity, miny = Infinity, maxx = -Infinity, maxy = -Infinity;
+  for (const o of outlines) {
+    minx = Math.min(minx, o.bbox[0]); miny = Math.min(miny, o.bbox[1]);
+    maxx = Math.max(maxx, o.bbox[2]); maxy = Math.max(maxy, o.bbox[3]);
+  }
+  const w = maxx - minx || 1, h = maxy - miny || 1;
+  const k = Math.min((W - 2 * pad) / w, (H - 2 * pad) / h);
+  const offx = (W - w * k) / 2, offy = (H - h * k) / 2;
+  const tx = (x) => offx + (x - minx) * k;
+  const ty = (y) => H - (offy + (y - miny) * k); // flip y
+
+  outlines.forEach((o, i) => {
+    const color = PREVIEW_COLORS[i % PREVIEW_COLORS.length];
+    const path = new Path2D();
+    const addLoop = (loop) => {
+      loop.forEach((p, j) => {
+        const X = tx(p[0]), Y = ty(p[1]);
+        if (j === 0) path.moveTo(X, Y); else path.lineTo(X, Y);
+      });
+      path.closePath();
+    };
+    addLoop(o.exterior);
+    o.holes.forEach(addLoop);
+    ctx.fillStyle = color + '33';
+    ctx.fill(path, 'evenodd');
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 1.5;
+    ctx.stroke(path);
+  });
+}
+
+function fmtDim(mm) {
+  if (state.units === 'inch') return (mm / 25.4).toFixed(2) + '″';
+  return Math.round(mm) + ' mm';
+}
+
+function renderPartDims(outlines, scale) {
+  const ul = $('d2-parts');
+  ul.innerHTML = '';
+  if (!outlines || !outlines.length) { ul.classList.add('empty'); return; }
+  ul.classList.remove('empty');
+  outlines.forEach((o, i) => {
+    const li = document.createElement('li');
+    const name = document.createElement('span');
+    name.textContent = o.name || `Outline ${i + 1}`;
+    name.style.color = PREVIEW_COLORS[i % PREVIEW_COLORS.length];
+    const dim = document.createElement('span');
+    dim.className = 'pdim';
+    const wmm = o.width * scale, hmm = o.height * scale;
+    const holes = o.holes.length ? ` · ${o.holes.length} hole${o.holes.length > 1 ? 's' : ''}` : '';
+    dim.textContent = `${fmtDim(wmm)} × ${fmtDim(hmm)}${holes}`;
+    li.append(name, dim);
+    ul.append(li);
   });
 }
 

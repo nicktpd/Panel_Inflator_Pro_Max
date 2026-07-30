@@ -507,17 +507,12 @@ def _name_hint_for(poly: sg.Polygon, labels: list[dict]) -> str | None:
 # ---------------------------------------------------------------------------
 
 
-def load_2d_as_parts(
-    path: str,
-    scale: float = 1.0,
-    thickness: float = 50.8,
-    roundover: float = 8.0,
-) -> list[dict]:
-    """Parse an SVG/DXF and return pillow-ready classified parts.
+def parse_polygons(path: str, scale: float = 1.0) -> tuple[list[sg.Polygon], list[str | None]]:
+    """Parse an SVG/DXF into nested shapely polygons + per-part name hints.
 
-    Every flat-topped extrusion is pillowable regardless of face count
-    (2D extrusions are lean meshes; the 10k STL hardware threshold does
-    not apply).
+    Shared front half of both the importer and the outline preview, so
+    the shape the preview draws is byte-for-byte the shape the extruder
+    will use (same parsing, densifying, even-odd nesting, and naming).
     """
     suffix = Path(path).suffix.lower()
     labels: list[dict] = []
@@ -535,9 +530,51 @@ def load_2d_as_parts(
     if not polys:
         raise ValueError("outlines could not be assembled into polygons")
 
-    # Name parts from annotation BEFORE translating, while text and
-    # outlines still share the drawing's coordinate system.
+    # Name parts from annotation while text and outlines still share the
+    # drawing's coordinate system.
     hints = [_name_hint_for(poly, labels) for poly in polys]
+    return polys, hints
+
+
+def outline_preview(path: str, scale: float = 1.0) -> list[dict]:
+    """Extract outlines for the UI preview WITHOUT extruding or pillowing.
+
+    Returns one dict per part with the exterior loop, hole loops, bounding
+    box and (for DXF) the annotation-derived name. Coordinates are in the
+    drawing's own units multiplied by ``scale`` (so pass the user's chosen
+    unit factor to preview in millimetres). Fast: pure 2D parsing.
+    """
+    polys, hints = parse_polygons(path, scale)
+    out = []
+    for poly, hint in zip(polys, hints):
+        minx, miny, maxx, maxy = poly.bounds
+        out.append({
+            "name": hint,
+            "exterior": [[round(x, 4), round(y, 4)] for x, y in poly.exterior.coords],
+            "holes": [
+                [[round(x, 4), round(y, 4)] for x, y in ring.coords]
+                for ring in poly.interiors
+            ],
+            "bbox": [minx, miny, maxx, maxy],
+            "width": maxx - minx,
+            "height": maxy - miny,
+        })
+    return out
+
+
+def load_2d_as_parts(
+    path: str,
+    scale: float = 1.0,
+    thickness: float = 50.8,
+    roundover: float = 8.0,
+) -> list[dict]:
+    """Parse an SVG/DXF and return pillow-ready classified parts.
+
+    Every flat-topped extrusion is pillowable regardless of face count
+    (2D extrusions are lean meshes; the 10k STL hardware threshold does
+    not apply).
+    """
+    polys, hints = parse_polygons(path, scale)
 
     # Normalize position: whole drawing translated to the positive quadrant.
     minx = min(p.bounds[0] for p in polys)

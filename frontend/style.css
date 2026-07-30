@@ -188,6 +188,28 @@ dialog label input, dialog label select { display: block; width: 100%; margin-to
 dialog label small { display: block; color: var(--text-dim); font-size: 10px; margin-top: 2px; }
 dialog menu { display: flex; justify-content: flex-end; gap: 8px; margin: 14px 0 0; padding: 0; }
 
+/* ---------- 2D import outline preview ---------- */
+
+#dialog-2d { min-width: 480px; }
+#d2-preview-wrap {
+  position: relative; background: #0e1014; border: 1px solid var(--border);
+  border-radius: 6px; margin-bottom: 8px;
+}
+#d2-preview { display: block; width: 100%; height: auto; border-radius: 6px; }
+#d2-preview-status {
+  position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+  color: var(--text-dim); font-size: 12px; pointer-events: none;
+}
+#d2-preview-status.err { color: var(--err); }
+#d2-preview-status.hidden { display: none; }
+.d2-parts { list-style: none; margin: 0 0 12px; padding: 0; max-height: 96px; overflow-y: auto; }
+.d2-parts li {
+  display: flex; justify-content: space-between; gap: 10px;
+  font-size: 11px; padding: 2px 4px; color: var(--text);
+}
+.d2-parts li .pdim { color: var(--text-dim); font-variant-numeric: tabular-nums; }
+.d2-parts.empty { color: var(--text-dim); }
+
 .project-list { list-style: none; margin: 0; padding: 0; max-height: 300px; overflow-y: auto; min-width: 380px; }
 .project-list li {
   display: flex; gap: 10px; align-items: baseline; padding: 7px 8px;

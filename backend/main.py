@@ -289,6 +289,35 @@ def _do_import(job_id: str, project_id: str, filename: str, options_2d: Import2D
     return {"project": json.loads(project.model_dump_json())}
 
 
+@app.post("/api/inspect2d")
+async def inspect_2d(file: UploadFile = File(...)):
+    """Extract the outline(s) from an uploaded SVG/DXF for the import
+    preview, WITHOUT creating a project. Fast, synchronous 2D parse.
+
+    Coordinates are returned in the drawing's own units (scale=1); the
+    frontend applies the chosen unit factor for display, so changing the
+    unit dropdown never needs a re-parse.
+    """
+    import tempfile
+
+    from .engine import import_2d
+
+    suffix = Path(file.filename or "").suffix.lower()
+    if suffix not in (".svg", ".dxf"):
+        raise HTTPException(400, "outline preview is only for SVG/DXF files")
+    data = await file.read()
+    with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+        tmp.write(data)
+        tmp_path = tmp.name
+    try:
+        outlines = import_2d.outline_preview(tmp_path, scale=1.0)
+    except Exception as exc:
+        raise HTTPException(422, f"could not read outline: {exc}")
+    finally:
+        Path(tmp_path).unlink(missing_ok=True)
+    return {"outlines": outlines, "source_type": suffix.lstrip(".")}
+
+
 @app.post("/api/projects")
 async def create_project(
     file: UploadFile = File(...),

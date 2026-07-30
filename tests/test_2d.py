@@ -133,6 +133,43 @@ def test_dxf_text_tolerated_and_used_for_names():
         assert p["bbox_max"][2] == pytest.approx(50.8, abs=1e-3)
 
 
+def test_outline_preview_matches_import():
+    """The preview must report the same shape the importer builds:
+    outer/holes present, dimensions correct, name carried through."""
+    svg = fixtures_gen.donut_svg(OUTER, HOLE_D)
+    preview = import_2d.outline_preview(str(svg), scale=1.0)
+    assert len(preview) == 1
+    o = preview[0]
+    assert o["width"] == pytest.approx(OUTER, abs=1.0)
+    assert o["height"] == pytest.approx(OUTER, abs=1.0)
+    assert len(o["holes"]) == 1
+    # Exterior/holes are closed rings of [x, y] pairs.
+    assert o["exterior"][0] == o["exterior"][-1]
+    assert all(len(p) == 2 for p in o["exterior"])
+
+    # Same part count as the real import path.
+    parts = import_2d.load_2d_as_parts(str(svg), scale=1.0, thickness=50.8, roundover=8.0)
+    assert len(parts) == len(preview)
+
+
+def test_outline_preview_dxf_names_and_scale():
+    """DXF preview carries the panel-key name and scales coordinates."""
+    import ezdxf
+
+    fixtures_gen.FIXTURES.mkdir(exist_ok=True)
+    path = fixtures_gen.FIXTURES / "preview_named.dxf"
+    doc = ezdxf.new()
+    msp = doc.modelspace()
+    msp.add_lwpolyline([(0, 0), (52, 0), (52, 8)], format="xy", close=True)
+    msp.add_text("J", height=1.2, dxfattribs={"insert": (34, 3)})
+    doc.saveas(path)
+
+    preview = import_2d.outline_preview(str(path), scale=25.4)
+    assert len(preview) == 1
+    assert preview[0]["name"] == "Panel J"
+    assert preview[0]["width"] == pytest.approx(52 * 25.4, abs=1.0)
+
+
 def test_two_disjoint_outlines_two_parts():
     """Multiple disjoint outlines become multiple parts."""
     fixtures_gen.FIXTURES.mkdir(exist_ok=True)

@@ -61,9 +61,13 @@ So the improvement loop is: ask Claude for a change → Claude pushes to
 
 ## Using it
 
-1. **Import** — drag in an `.stl`, `.svg`, or `.dxf`. 2D files first ask
-   for units, base thickness (default 50.8 mm = 2"), and edge roundover
-   (default 8 mm). Big STLs show a progress bar; nothing blocks.
+1. **Import** — drag in an `.stl`, `.svg`, or `.dxf`. 2D files first show
+   an **outline preview**: the exact shape extracted from the file (holes
+   punched, dimensions and panel-key name shown) so you can confirm it's
+   what you expect before committing. The same dialog sets units, base
+   thickness (default 50.8 mm = 2"), and edge roundover (default 8 mm) —
+   the dimension readout updates live as you change the unit. Big STLs
+   show a progress bar; nothing blocks.
 2. **Review parts** — the sidebar lists every connected component with a
    `PILLOW` / `PASS` chip (click the chip to reclassify). Click a part in
    the list or in the 3D view to select it.

@@ -102,6 +102,13 @@
 <dialog id="dialog-2d">
   <form method="dialog">
     <h3>2D outline import</h3>
+
+    <div id="d2-preview-wrap">
+      <canvas id="d2-preview" width="440" height="240"></canvas>
+      <div id="d2-preview-status">reading outline…</div>
+    </div>
+    <ul id="d2-parts" class="d2-parts"></ul>
+
     <label>Units in file
       <select id="d2-units">
         <option value="1.0">millimetres (1:1)</option>
