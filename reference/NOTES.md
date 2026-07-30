@@ -172,6 +172,39 @@ Result: rectangle, circle and pedal are watertight (0 open edges) at
 preview and export; regression test builds a LINE+ARC pill DXF and
 asserts chaining + watertightness end-to-end.
 
+### Eighth round (user petal render: bumpy spots around the bulb rim)
+
+The petal (first genuinely curved production outline) exposed the last
+raster dependency. Diagnosis chain, each verified by measurement:
+
+- Arc flattening at 0.1 mm sagitta left ~10 mm facets whose joints
+  wobbled the roll direction -> FLATTEN_TOL now 0.01 mm (~3 mm chords,
+  geometrically indistinguishable from the true arc; densify governs
+  final point count so meshes don't grow).
+- The bottom ~2 cells of the walls shaded off averaged quad-strip
+  normals (serrated base line) -> analytic wall normals now run all the
+  way down to the base ring (the downward bottom cap is never seen).
+- The big one: sampling the steep near-rim profile bilinearly from the
+  raster MOIRES against curved outlines -- the lattice/curve alignment
+  drifts along the rim, wobbling the seam height 0.2-0.5 mm at 5-20 mm
+  period (measured: 0.23 mm p-p on the bulb arc vs 0.002 mm on a
+  straight edge; straight edges are lattice-aligned, which is why every
+  rectangle was clean). Structural fix: the top surface is now an
+  ANALYTIC FUNCTION evaluated per vertex -- exact segment distance in,
+  closed-form crown (smooth clamp), 1D gaussian-blurred roll-drop
+  table; rasters contribute only intrinsically smooth fields (membrane
+  interior, tension, painted masks, darts). Vertex normals come from a
+  numerical gradient of the SAME function, so geometry and shading
+  always agree; ring normals use inside-only probes along the smoothed
+  distance gradient (central differences at the rim would straddle the
+  outline, where the unsigned distance folds back). The raster knee
+  blur is gone -- the C1 smooth clamp is the knee rounding.
+
+Also: the petal taper the user described (narrow tail = more tension =
+lower crown) is reproduced by the membrane drive + tension: bulb peaks
+at ~66 mm total, tail ~53 mm on the 38 mm core. The Tension slider
+strengthens it further if wanted.
+
 ### Fifth round (user: shape is right, but peak/corner LINES on top)
 
 Driving the crown with the raw min-distance printed the field's slope

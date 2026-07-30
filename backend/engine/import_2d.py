@@ -36,11 +36,19 @@ from shapely.geometry.polygon import orient
 
 from . import import_stl
 
-# Chordal tolerance for flattening curves, in mm. 0.1 keeps the facet
-# sagitta invisible on upholstery-scale arcs (a 125 mm radius flattens to
-# ~10 mm chords); the old 0.5 produced ~20 mm chords whose flats caught
-# specular light on the rolled edge.
-FLATTEN_TOL = 0.1
+# Chordal tolerance for flattening curves, in mm. The polygon IS the
+# geometry the walls and every distance field follow, and glossy vinyl
+# shading amplifies its facet joints: at 0.1 mm sagitta (~10 mm chords on
+# a 125 mm arc) the roll direction wobbled per facet and the bulb
+# shoulder of the petal read as wrinkled lumps. 0.01 mm (~3 mm chords)
+# is geometrically indistinguishable from the true arc; the densify pass
+# governs final point spacing, so the mesh doesn't grow.
+FLATTEN_TOL = 0.01
+# Endpoint tolerance (mm) for treating a single entity/subpath as closed
+# -- deliberately independent of FLATTEN_TOL (it used to be derived from
+# it, and tightening the flattening would have silently stopped slightly
+# sloppy closed polylines from importing).
+CLOSE_TOL = 2.0
 # Sample spacing along segments when flattening (keeps chord error far
 # below FLATTEN_TOL for typical panel-scale curvature).
 SAMPLE_STEP = 2.0
@@ -87,7 +95,7 @@ def _rings_from_svg(path: str, scale: float) -> list[np.ndarray]:
                 continue
             # Treat as closed if endpoints (nearly) coincide.
             end = sub[-1].end
-            if abs(end - pts[0]) > FLATTEN_TOL * 4:
+            if abs(end - pts[0]) * scale > CLOSE_TOL:
                 continue  # open contour: not a panel outline
             arr = np.array([[p.real, -p.imag] for p in pts], dtype=np.float64) * scale
             rings.append(arr)
@@ -200,7 +208,10 @@ def _rings_from_dxf(path: str, scale: float) -> tuple[list[np.ndarray], list[dic
         pts = np.array([(v.x, v.y) for v in epath.flattening(tol)], dtype=np.float64)
         if len(pts) < 2:
             continue
-        closed = epath.is_closed or np.linalg.norm(pts[0] - pts[-1]) < tol * 4
+        closed = (
+            epath.is_closed
+            or np.linalg.norm(pts[0] - pts[-1]) * scale < CLOSE_TOL
+        )
         if closed and len(pts) >= 3:
             rings.append(pts * scale)
         else:

@@ -173,102 +173,115 @@ def pillow_panel(
     if d_int is None:
         d_int = dist  # degenerate domain: fall back to the smoothed EDT
     else:
-        # Half-cell polish of the discrete solve; the field itself is
-        # smooth, this only irons raster-level noise.
-        d_int = ndimage.gaussian_filter(d_int, sigma=1.0)
+        # Iron out the coarse solve's residual boundary-staircase wobble
+        # (curved outlines quantize to ~6 mm blocks; the wobble showed as
+        # wrinkles in the bulb shoulder highlight). ~6 mm physical blur,
+        # res-invariant; the membrane field is smooth so this changes
+        # nothing else, and the raw/interior blend means d_int is only
+        # ever used well inside the rim where the blur has no edge-dip.
+        d_int = ndimage.gaussian_filter(d_int, sigma=3.0 * cell)
     inner = max(roll, 3.0 * res)
     outer = inner + 2.5 * max(sigma_mm, res)
-    wgt = np.clip((dist_raw - inner) / max(outer - inner, 1e-9), 0.0, 1.0)
-    wgt = wgt * wgt * (3.0 - 2.0 * wgt)
-    d_c = dist_raw * (1.0 - wgt) + d_int * wgt
 
     # Tension: pull the crown down where the membrane is more constrained
     # than the nearest-edge distance implies (tapers, pinches, tips). The
     # factor equals 1 on straight panels, so calibration is preserved.
-    d_eff = d_c
+    tau_s = None
     if tension > 0.0:
-        tau = meshops.membrane_tension(fp)
+        tau_s = meshops.membrane_tension(fp)
         if sigma > 0:
-            tau = ndimage.gaussian_filter(tau, sigma=max(sigma * cell * 0.5, 1.0))
-        d_eff = d_c * ((1.0 - tension) + tension * tau)
-
-    prof = meshops.crown_profile(d_eff, crown, dref, exp)
+            tau_s = ndimage.gaussian_filter(tau_s, sigma=max(sigma * cell * 0.5, 1.0))
 
     mask_grid = _mask_on_raster(mask, fp)
     if mask_grid is not None:
-        prof = prof * mask_grid
+        # Brush-mask smoothing so painted strokes never crease the
+        # surface (upholstery has no hard interior lines).
+        mask_grid = ndimage.gaussian_filter(
+            mask_grid, sigma=(KNEE_BLUR_SIGMA + MASK_BLUR_SIGMA) * cell
+        )
 
-    # Round the saturation-knee shoulder (and any brush edge) so the bulge
-    # has no crease line. Always applied; slightly stronger with a mask.
-    knee = KNEE_BLUR_SIGMA + (MASK_BLUR_SIGMA if mask_grid is not None else 0.0)
-    prof = ndimage.gaussian_filter(prof, sigma=knee * cell)
-
-    # Wrapped-edge roll: fold the top surface down toward every edge
-    # (outline, holes, corners alike) over the roll radius, tangent to the
-    # side walls. Added AFTER the knee blur so the roll radius stays
-    # faithful. Blurring the arc by ~roll/3 rounds BOTH of its curvature
-    # discontinuities (wall->arc and arc->crown) -- the quarter circle
-    # alone is slope-continuous but its curvature jumps where it ends,
-    # which read as a subtle hard band around the dome in the reference
-    # comparison. This is what replaces the old discrete 3-ring fillet:
-    # edge + crown are one continuous height field with no hard rim line.
-    # (roll itself is computed above, where the drive-field blend needs it.)
+    # 1D blurred roll-drop table. The wrapped-edge roll is a pure
+    # function of the exact edge distance, so it is precomputed as a 1D
+    # curve: quarter circle, continued at -roll for d < 0 (the wall),
+    # gaussian-blurred by ~roll/3 to round BOTH of its curvature
+    # discontinuities (wall->arc and arc->crown). Physical units
+    # throughout -- identical at preview and export resolution.
+    drop_tab = None
     if roll > 0.0:
-        # The roll drop is ADDED to the crown, never faded in. Both the
-        # crown profile (exp < 1, then smooth-clamped) and the quarter-
-        # circle drop are concave-down curves, so their sum descends from
-        # the dome to the rim with monotonically steepening slope -- one
-        # continuous convex roll-over, like vinyl leaving the dome and
-        # wrapping the edge. The previous smoothstep fade (which zeroed
-        # the crown across the roll zone so the rim carried the full
-        # drop) put a concave SHELF right above the convex roll arc: in
-        # side silhouette the dome rolled down to a waist and the roll
-        # then flared back out below it -- the bell shape the viewport
-        # feedback kept flagging. Cost of removing it: the smoothed
-        # crown's bleed past the boundary props the rim up ~1/3 of the
-        # roll radius, so the visible wall reads a touch taller; the
-        # photos' ~1" visible edge still matches.
-        # Slightly smoothed raw distance for the roll: kills the raster
-        # stair-step scallops along diagonal edges without moving the
-        # roll's position (sub-cell blur).
-        dist_roll = ndimage.gaussian_filter(dist_raw, sigma=0.8)
-        drop = meshops.edge_roll_drop(dist_roll, roll, res=res)
-        drop_sigma = max(1.5, roll / (3.0 * res))
-        prof = prof + ndimage.gaussian_filter(drop, sigma=drop_sigma)
+        sig_mm = max(roll / 3.0, 2.0)
+        step = 0.05
+        pad = 5.0 * sig_mm
+        daxis = np.arange(-pad, roll + pad, step)
+        curve = np.where(
+            daxis < 0.0,
+            -roll,
+            np.sqrt(np.maximum(roll**2 - (roll - np.minimum(daxis, roll)) ** 2, 0.0))
+            - roll,
+        )
+        curve = ndimage.gaussian_filter1d(curve, sigma=sig_mm / step)
+        drop_tab = (daxis, curve)
 
-        # Corner fold darts: real vinyl can't wrap a convex corner flat --
-        # it gathers into a short diagonal crease running inward along the
-        # corner bisector (reference photos, corner close-ups). Carve a
-        # shallow gaussian groove per corner, scaled by the roll radius
-        # and how sharp the turn is. In the photos the fold reads as a
-        # faint diagonal tuck, not a dent: keep it shallow and close to
-        # the roll zone. Grid world coordinates use the raster's MARGIN
-        # convention (an off-by-MARGIN here shifts every dart diagonally,
-        # which shows up as asymmetric crumpled corners).
-        if corners:
-            gy_w = fp.ymin + (np.arange(prof.shape[0]) - meshops.MARGIN) * res
-            gx_w = fp.xmin + (np.arange(prof.shape[1]) - meshops.MARGIN) * res
-            GX, GY = np.meshgrid(gx_w, gy_w)
-            darts = np.zeros_like(prof)
-            for cx, cy, bx, by, turn in corners:
-                sharp = min(float(turn) / 90.0, 1.5)
-                depth = 0.16 * roll * sharp
-                length = 2.2 * roll
-                width = 0.5 * roll
-                along = (GX - cx) * bx + (GY - cy) * by
-                across = -(GX - cx) * by + (GY - cy) * bx
-                # Groove centred just past the roll zone so it reads on
-                # the visible shoulder instead of being swallowed by the
-                # roll's own drop.
-                dart = -depth * np.exp(
-                    -0.5 * ((along - 1.2 * roll) / (0.6 * length)) ** 2
-                    - 0.5 * (across / width) ** 2
-                )
-                dart[along < 0] = 0.0
-                darts += dart
-            # Blur ONLY the dart field: re-blurring the whole profile here
-            # would soften the calibrated roll radius on every edge.
-            prof = prof + ndimage.gaussian_filter(darts, sigma=max(1.0 * cell, 0.5))
+    # Corner fold darts: real vinyl can't wrap a convex corner flat -- it
+    # gathers into a short diagonal crease along the corner bisector
+    # (reference photos). Kept as a raster field (smooth gaussians
+    # bilinear-sample cleanly). Grid world coordinates use the raster's
+    # MARGIN convention (an off-by-MARGIN here shifts every dart
+    # diagonally -- asymmetric crumpled corners).
+    darts_f = None
+    if roll > 0.0 and corners:
+        gy_w = fp.ymin + (np.arange(fp.grid.shape[0]) - meshops.MARGIN) * res
+        gx_w = fp.xmin + (np.arange(fp.grid.shape[1]) - meshops.MARGIN) * res
+        GX, GY = np.meshgrid(gx_w, gy_w)
+        darts = np.zeros(fp.grid.shape)
+        for cx, cy, bx, by, turn in corners:
+            sharp = min(float(turn) / 90.0, 1.5)
+            depth = 0.16 * roll * sharp
+            length = 2.2 * roll
+            width = 0.5 * roll
+            along = (GX - cx) * bx + (GY - cy) * by
+            across = -(GX - cx) * by + (GY - cy) * bx
+            # Groove centred just past the roll zone so it reads on the
+            # visible shoulder, not swallowed by the roll's own drop.
+            dart = -depth * np.exp(
+                -0.5 * ((along - 1.2 * roll) / (0.6 * length)) ** 2
+                - 0.5 * (across / width) ** 2
+            )
+            dart[along < 0] = 0.0
+            darts += dart
+        darts_f = ndimage.gaussian_filter(darts, sigma=max(1.0 * cell, 0.5))
+
+    def _H(xy):
+        """The pillow surface: height above the slab top at world xy.
+
+        Evaluated PER POINT from the EXACT segment distance -- never by
+        sampling a rasterized profile. Bilinear sampling of the steep
+        near-rim profile from the raster beat (moired) against curved
+        outlines: the lattice-vs-curve alignment drifts along the rim, so
+        the seam height wobbled ~0.2-0.5 mm quasi-periodically -- the
+        "bumpy rim" on the petal bulb (straight edges, being
+        lattice-aligned, never showed it). Raster fields only contribute
+        where they are intrinsically smooth: the membrane interior field,
+        tension, painted masks, darts. Roll drop and crown come from
+        analytic/1D forms of the exact distance, so the rim is exact for
+        every outline shape at every resolution.
+        """
+        if len(segs):
+            d = meshops._dist_to_segments(xy, segs, res)
+        else:
+            d = fp.sample(dist_raw, xy)
+        w = np.clip((d - inner) / max(outer - inner, 1e-9), 0.0, 1.0)
+        w = w * w * (3.0 - 2.0 * w)
+        d_c = d * (1.0 - w) + fp.sample(d_int, xy) * w
+        if tau_s is not None:
+            d_c = d_c * ((1.0 - tension) + tension * fp.sample(tau_s, xy))
+        h = meshops.crown_profile(d_c, crown, dref, exp)
+        if mask_grid is not None:
+            h = h * fp.sample(mask_grid, xy)
+        if drop_tab is not None:
+            h = h + np.interp(d, drop_tab[0], drop_tab[1])
+        if darts_f is not None:
+            h = h + fp.sample(darts_f, xy)
+        return h
 
     # --- delete flat top, keep sides/fillets/bottom ---
     keep = pf[~vtop[pf].all(axis=1)]
@@ -345,7 +358,7 @@ def pillow_panel(
     new_f = tri.simplices[keep_tri]
     # Delaunay orientation is not guaranteed; make the new top face up.
     new_f = meshops.ensure_up_normals(pts2d, new_f)
-    newz = zmax + fp.sample(prof, pts2d)
+    newz = zmax + _H(pts2d)
     new_v = np.column_stack([pts2d, newz])
 
     # --- displace kept verts; bottom pinned, sides barrel with height ---
@@ -361,12 +374,12 @@ def pillow_panel(
     # outward = negative distance gradient; amount fades with depth so
     # only the wall band moves. Reference: side views in
     # reference/NOTES.md -- edges bulge near the TOP, never at mid-air.
-    # Heights are sampled at the ORIGINAL footprint positions for every
+    # Heights are evaluated at the ORIGINAL footprint positions for every
     # vertex (kept and new) before any horizontal displacement, so wall
-    # and top read the same height field at the same place -- sampling
-    # the ring after displacing it read the profile ~2 mm off from where
-    # its neighbours read it, which creased the seam.
-    dz = fp.sample(prof, pv[:, :2])
+    # and top read the same surface function at the same place --
+    # evaluating the ring after displacing it read the surface ~2 mm off
+    # from where its neighbours read it, which creased the seam.
+    dz = _H(pv[:, :2])
     w = np.clip((pv[:, 2] - zmin) / thick, 0.0, 1.0) ** w_exp
     pv[:, 2] += dz * w
     new_v[: len(ring), 2] = pv[ring, 2]  # weld the seam exactly
@@ -423,19 +436,43 @@ def pillow_panel(
         all_v, all_f = meshops.compact(all_v, all_f)
         return all_v, all_f
 
-    # Analytic vertex normals for the whole top height field. Averaged
+    # Analytic vertex normals for the whole top surface. Averaged
     # topology normals wobble wherever triangle sizes change (the graded
     # ring->collar->grid bands), which glossy vinyl shows as streaks at
-    # grazing angles. The exact normal of z = prof(x, y) is
-    # (-dP/dx, -dP/dy, 1)/|.|, independent of the triangulation.
+    # grazing angles. The normal comes from a NUMERICAL gradient of the
+    # same analytic surface function _H the vertex heights came from
+    # (central differences, sub-mm step), evaluated at the ORIGINAL
+    # (pre-belly) positions the heights were evaluated at -- geometry and
+    # shading always agree, and the rim carries none of the raster moire
+    # a sampled-gradient normal would pick up.
     topo = meshops.topology_vertex_normals(all_v, all_f)
-    gPy, gPx = np.gradient(prof, res)
     top_ids = np.concatenate([ring, np.arange(len(pv), len(all_v))])
-    nx_ = -fp.sample(gPx, all_v[top_ids, :2])
-    ny_ = -fp.sample(gPy, all_v[top_ids, :2])
-    nz_ = np.ones(len(top_ids))
-    ana = np.column_stack([nx_, ny_, nz_])
+    otxy = np.vstack([ring_xy, pts2d[len(ring):]])
+    eps = 0.35
+    hx = (_H(otxy + np.array([eps, 0.0])) - _H(otxy - np.array([eps, 0.0]))) / (2 * eps)
+    hy = (_H(otxy + np.array([0.0, eps])) - _H(otxy - np.array([0.0, eps]))) / (2 * eps)
+    ana = np.column_stack([-hx, -hy, np.ones(len(otxy))])
     ana /= np.linalg.norm(ana, axis=1, keepdims=True)
+    # RING normals need special handling: the central-difference probes
+    # of a ring vertex step OUTSIDE the outline, where the UNSIGNED exact
+    # distance folds back (|d|) and the numerical gradient collapses --
+    # per-vertex noise that reads as fine teeth along the seam highlight.
+    # Instead, take the 1D profile slope dH/dd from probes safely INSIDE
+    # (0.5 and 1.0 mm along the inward direction) and orient it along the
+    # smoothed distance gradient, which is direction-stable on the rim.
+    grow_n, gcol_n = np.gradient(dist)
+    ivx = fp.sample(gcol_n, ring_xy)
+    ivy = fp.sample(grow_n, ring_xy)
+    ivn = np.hypot(ivx, ivy)
+    ivx = np.where(ivn > 1e-6, ivx / np.maximum(ivn, 1e-9), 0.0)
+    ivy = np.where(ivn > 1e-6, ivy / np.maximum(ivn, 1e-9), 0.0)
+    inward = np.column_stack([ivx, ivy])
+    h1 = _H(ring_xy + 0.5 * inward)
+    h2 = _H(ring_xy + 1.0 * inward)
+    slope = (h2 - h1) / 0.5  # dH/dd at the rim (positive: rises inward)
+    ring_ana = np.column_stack([slope * -ivx, slope * -ivy, np.ones(len(ring_xy))])
+    ring_ana /= np.linalg.norm(ring_ana, axis=1, keepdims=True)
+    ana[: len(ring)] = ring_ana
     normals = topo.copy()
     normals[top_ids] = ana
 
@@ -454,11 +491,15 @@ def pillow_panel(
         n_wall = np.column_stack([ox, oy, -drdz])
         wn = np.linalg.norm(n_wall, axis=1, keepdims=True)
         n_wall = np.divide(n_wall, wn, out=np.zeros_like(n_wall), where=wn > 1e-9)
-        # Wallness: full on the boundary band, fading inward; zero on the
-        # bottom face (which must stay flat (0,0,-1)) and where the
-        # outward direction was degenerate.
-        wallness = near_edge * np.clip((pv[:, 2] - zmin) / (2.0 * res), 0.0, 1.0)
-        wallness = wallness * (np.hypot(ox, oy) > 0.5)
+        # Wallness: full on the boundary band, fading inward; zero where
+        # the outward direction was degenerate. The wall normal runs all
+        # the way DOWN to the base ring: the old z-ramp (fading to
+        # averaged topology normals over the bottom ~2 cells) made the
+        # lowest wall band shade off the quad-strip diagonals -- a
+        # serrated sawtooth line along the base of every wall. The cost
+        # is that the bottom cap's rim ring loses its pure (0,0,-1), but
+        # the bottom cap faces the bench and is never rendered.
+        wallness = near_edge * (np.hypot(ox, oy) > 0.5)
         blended = (
             topo[: len(pv)] * (1.0 - wallness[:, None]) + n_wall * wallness[:, None]
         )

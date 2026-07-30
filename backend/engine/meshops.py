@@ -476,7 +476,12 @@ def poisson_wall_distance(fp: "FootprintRaster", target_cells: int = 240) -> np.
         rhs = fp.res * fp.res
         checker = (np.add.outer(np.arange(ny), np.arange(nx)) % 2).astype(bool)
         omega = 1.7
-        for _ in range(20 * factor):
+        # Enough sweeps to also relax the coarse solve's boundary
+        # STAIRCASE error on curved outlines (wavelength ~2 coarse cells
+        # along the rim -- slower to die than pointwise error; visible as
+        # wrinkles in the bulb shoulder of curved parts). Sweeps are a
+        # few np.rolls each; even 60x3 costs ~tens of ms.
+        for _ in range(60 * factor):
             for color in (checker, ~checker):
                 nb = (
                     np.roll(h, 1, 0) + np.roll(h, -1, 0)

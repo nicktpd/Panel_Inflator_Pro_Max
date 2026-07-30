@@ -40,7 +40,11 @@ EXPORT_GRID = 6.0
 # 7 = chained-entity DXF import (LINE/ARC outlines), finer arc
 #     flattening, collinearity nudge + exact inside culls: watertight
 #     caps/top on every outline shape.
-ENGINE_VERSION = 7
+# 8 = analytic per-vertex surface: heights and normals evaluated from
+#     the exact edge distance (1D roll table, closed-form crown), rasters
+#     only for smooth fields -- kills the curved-rim moire wrinkles;
+#     0.01 mm arc flattening; wall normals run to the base ring.
+ENGINE_VERSION = 8
 
 
 def params_key(params: dict, res: float, grid_step: float, mask_version: int) -> str:
