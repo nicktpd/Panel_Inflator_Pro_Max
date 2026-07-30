@@ -53,10 +53,12 @@ def test_square_panel():
     assert len(center) > 0
     assert center[:, 2].max() == pytest.approx(50 + CROWN, abs=2.0)
 
-    # Corners stay pinned low. (Threshold allows the lift the gaussian
-    # distance smoothing gives a corner; far below the 32 mm crown.)
+    # Corners stay pinned low. The crown follows the exact distance law
+    # (raw segment distance, no gaussian bleed), so a point 15 mm in
+    # diagonal can loft up to f(15) = 32*(15/110)^0.55 ~ 10.7 mm before
+    # tension pulls it down; far below the 32 mm crown either way.
     corner = v[(v[:, 0] < 15) & (v[:, 1] < 15) & (v[:, 2] > 25)]
-    assert corner[:, 2].max() < 50 + 9.0, "corners should stay near base thickness"
+    assert corner[:, 2].max() < 50 + 11.0, "corners should stay near base thickness"
 
     # Face count must not balloon (no naive subdivision).
     assert len(f) < len(pf) * 1.30

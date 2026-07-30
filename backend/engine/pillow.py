@@ -144,12 +144,20 @@ def pillow_panel(
     # Tension: pull the crown down where the membrane is more constrained
     # than the nearest-edge distance implies (tapers, pinches, tips). The
     # factor equals 1 on straight panels, so calibration is preserved.
-    d_eff = dist
+    # The crown is driven by the RAW distance: it is exact (segment-based)
+    # and perfectly smooth along edges, and -- critically -- exactly 0 at
+    # the outline, so the crown is truly pinned at the rim and the edge
+    # roll's full drop survives. The smoothed field's bleed past the
+    # boundary propped the rim up by several mm (a visibly taller edge
+    # wall); the smoothed field is still what gradient directions and
+    # near-edge falloffs use. Corner miter softening lost by skipping the
+    # blur here is covered by the knee blur, the roll blur and the darts.
+    d_eff = dist_raw
     if tension > 0.0:
         tau = meshops.membrane_tension(fp)
         if sigma > 0:
             tau = ndimage.gaussian_filter(tau, sigma=max(sigma * cell * 0.5, 1.0))
-        d_eff = dist * ((1.0 - tension) + tension * tau)
+        d_eff = dist_raw * ((1.0 - tension) + tension * tau)
 
     prof = meshops.crown_profile(d_eff, crown, dref, exp)
 
@@ -173,16 +181,24 @@ def pillow_panel(
     # edge + crown are one continuous height field with no hard rim line.
     roll = min(edge_roll, thick * 0.6) if edge_roll > 0.0 else 0.0
     if roll > 0.0:
-        # Inside the roll zone the wrap, not the stuffing, dictates the
-        # surface: fade the crown in across the roll (C1 smoothstep) so
-        # the rim carries the full roll drop instead of being propped up
-        # by the smoothed crown's bleed past the boundary.
+        # The roll drop is ADDED to the crown, never faded in. Both the
+        # crown profile (exp < 1, then smooth-clamped) and the quarter-
+        # circle drop are concave-down curves, so their sum descends from
+        # the dome to the rim with monotonically steepening slope -- one
+        # continuous convex roll-over, like vinyl leaving the dome and
+        # wrapping the edge. The previous smoothstep fade (which zeroed
+        # the crown across the roll zone so the rim carried the full
+        # drop) put a concave SHELF right above the convex roll arc: in
+        # side silhouette the dome rolled down to a waist and the roll
+        # then flared back out below it -- the bell shape the viewport
+        # feedback kept flagging. Cost of removing it: the smoothed
+        # crown's bleed past the boundary props the rim up ~1/3 of the
+        # roll radius, so the visible wall reads a touch taller; the
+        # photos' ~1" visible edge still matches.
         # Slightly smoothed raw distance for the roll: kills the raster
         # stair-step scallops along diagonal edges without moving the
         # roll's position (sub-cell blur).
         dist_roll = ndimage.gaussian_filter(dist_raw, sigma=0.8)
-        s = np.clip((dist_roll - res) / roll, 0.0, 1.0)
-        prof = prof * (s * s * (3.0 - 2.0 * s))
         drop = meshops.edge_roll_drop(dist_roll, roll, res=res)
         drop_sigma = max(1.5, roll / (3.0 * res))
         prof = prof + ndimage.gaussian_filter(drop, sigma=drop_sigma)
@@ -262,7 +278,16 @@ def pillow_panel(
         return pv, pf.copy()
     tri = Delaunay(pts2d)
     cent = pts2d[tri.simplices].mean(axis=1)
-    new_f = tri.simplices[fp.sample(dist_raw, cent) > CULL_DIST]
+    cd = fp.sample(dist_raw, cent)
+    keep_tri = cd > CULL_DIST
+    # Triangles made only of ring/collar vertices hug the boundary by
+    # construction (tight convex corners), so the centroid margin doesn't
+    # apply -- culling them left pinholes at the rim corners (open edges
+    # in the export). Genuine hole-spanning bridges are still culled:
+    # away from a cutout's rim the raw distance is exactly 0.
+    boundary_band = (tri.simplices < len(ring_xy) + len(collar)).all(axis=1)
+    keep_tri |= boundary_band & (cd > 1e-6)
+    new_f = tri.simplices[keep_tri]
     # Delaunay orientation is not guaranteed; make the new top face up.
     new_f = meshops.ensure_up_normals(pts2d, new_f)
     newz = zmax + fp.sample(prof, pts2d)
@@ -281,6 +306,16 @@ def pillow_panel(
     # outward = negative distance gradient; amount fades with depth so
     # only the wall band moves. Reference: side views in
     # reference/NOTES.md -- edges bulge near the TOP, never at mid-air.
+    # Heights are sampled at the ORIGINAL footprint positions for every
+    # vertex (kept and new) before any horizontal displacement, so wall
+    # and top read the same height field at the same place -- sampling
+    # the ring after displacing it read the profile ~2 mm off from where
+    # its neighbours read it, which creased the seam.
+    dz = fp.sample(prof, pv[:, :2])
+    w = np.clip((pv[:, 2] - zmin) / thick, 0.0, 1.0) ** w_exp
+    pv[:, 2] += dz * w
+    new_v[: len(ring), 2] = pv[ring, 2]  # weld the seam exactly
+
     wall = None  # stashed belly quantities, reused for analytic wall normals
     if roll > 0.0:
         # Gradient of the SMOOTHED distance: the raw field carries the
@@ -288,12 +323,17 @@ def pillow_panel(
         # scallops the wall (visible as periodic lumps along straight
         # edges). The smoothed gradient is direction-stable.
         grow, gcol = np.gradient(dist)
-        ox = -fp.sample(gcol, pv[:, :2])
-        oy = -fp.sample(grow, pv[:, :2])
-        onorm = np.hypot(ox, oy)
-        safe = onorm > 1e-6
-        ox = np.where(safe, ox / np.maximum(onorm, 1e-9), 0.0)
-        oy = np.where(safe, oy / np.maximum(onorm, 1e-9), 0.0)
+
+        def _outward(pts_xy):
+            vx = -fp.sample(gcol, pts_xy)
+            vy = -fp.sample(grow, pts_xy)
+            vn = np.hypot(vx, vy)
+            ok = vn > 1e-6
+            vx = np.where(ok, vx / np.maximum(vn, 1e-9), 0.0)
+            vy = np.where(ok, vy / np.maximum(vn, 1e-9), 0.0)
+            return vx, vy
+
+        ox, oy = _outward(pv[:, :2])
         t = np.clip((pv[:, 2] - zmin) / thick, 0.0, 1.0)
         belly_amp = 0.15 * roll
         belly = belly_amp * t * t
@@ -302,12 +342,18 @@ def pillow_panel(
         near_edge = np.exp(-fp.sample(dist, pv[:, :2]) / max(roll, 1e-6))
         pv[:, 0] += ox * belly * near_edge
         pv[:, 1] += oy * belly * near_edge
+        # The SAME displacement field, evaluated at t = 1, moves the new
+        # top vertices near the rim (near_edge decays inward over ~roll).
+        # Displacing only the wall left the seam ring poking ~belly_amp
+        # past the undisplaced surface just inside it -- a hard lip right
+        # where the dome lands, which silhouettes as a waist ring. As one
+        # continuous field, wall belly and rim lean-out taper smoothly
+        # into the untouched dome.
+        tx, ty = _outward(new_v[:, :2])
+        near_top = np.exp(-fp.sample(dist, new_v[:, :2]) / max(roll, 1e-6))
+        new_v[:, 0] += tx * belly_amp * near_top
+        new_v[:, 1] += ty * belly_amp * near_top
         wall = (ox, oy, t, near_edge, belly_amp)
-
-    dz = fp.sample(prof, pv[:, :2])
-    w = np.clip((pv[:, 2] - zmin) / thick, 0.0, 1.0) ** w_exp
-    pv[:, 2] += dz * w
-    new_v[: len(ring), 2] = pv[ring, 2]  # weld the seam exactly
 
     # --- merge old (kept) and new (top) into one vertex/face set ---
     offset = len(pv)

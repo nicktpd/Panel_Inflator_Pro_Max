@@ -29,7 +29,10 @@ EXPORT_GRID = 6.0
 # (algorithm fixes, not parameter changes), so stale caches from older
 # engine versions are never served. 2 = exact-distance-field rework.
 # 3 = monotone side-wall belly (no bell flare below the dome's landing).
-ENGINE_VERSION = 3
+# 4 = convex roll-over: crown added through the roll zone (no fade
+#     shelf), raw-distance crown (full rim drop), continuous belly field
+#     across seam, corner pinholes closed.
+ENGINE_VERSION = 4
 
 
 def params_key(params: dict, res: float, grid_step: float, mask_version: int) -> str:

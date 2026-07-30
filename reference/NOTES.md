@@ -83,6 +83,35 @@ a re-entrant waist at any parameter setting. The top height field is
 untouched. Analytic wall normals updated for the new offset profile
 (dr/dz = 2*amp*t/thickness).
 
+That alone was NOT enough (user re-test still showed the bell). The
+real driver was found by rendering the mesh with the user's own camera
+(software rasterizer, `scratchpad` diagnostics) and isolating terms:
+
+- **The crown fade made the shelf.** The smoothstep that zeroed the
+  crown across the roll zone put a CONCAVE shelf directly above the
+  CONVEX quarter-circle roll — concave-into-convex IS the bell, along
+  every edge. The fade is gone: crown and roll drop are simply added.
+  Both curves are concave-down, so the descent from dome to rim now has
+  monotonically steepening slope — one continuous convex roll-over, at
+  every parameter setting.
+- **The crown is driven by the RAW (exact segment) distance.** Without
+  the fade, the smoothed field's bleed past the boundary propped the
+  rim up several mm (shallow-looking wrap). Raw distance is exactly 0
+  at the outline, so the rim carries ~70% of the roll radius (the rest
+  is knee/roll blur). The smoothed field still supplies gradient
+  directions and near-edge falloffs.
+- **The belly is one continuous field.** Displacing only the wall left
+  the seam ring poking `belly_amp` past the undisplaced top surface
+  just inside it — a hard lip that silhouetted as a waist ring. The
+  same displacement (at t=1, fading inward over ~roll) now also moves
+  the top vertices near the rim, tapering smoothly into the dome. All
+  heights are sampled at original footprint positions before any
+  horizontal displacement.
+- **Rim pinholes closed**: boundary-band triangles (ring/collar only)
+  are exempt from the centroid cull margin (cutout bridges still die on
+  the exact-zero distance inside holes). Export is watertight: 0 open
+  edges at both resolutions.
+
 ### Second calibration round (user viewport feedback on the above)
 
 - Wall ribbing + rim sawtooth were shading artifacts: walls now get

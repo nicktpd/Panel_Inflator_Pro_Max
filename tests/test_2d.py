@@ -211,7 +211,13 @@ def test_edge_roll_continuous():
         band = mid[np.abs(mid[:, 1] - d) < tol]
         return band[:, 2].max() if len(band) else None
 
-    z_rim = ztop(0.5)
+    # The rim proper: outermost top vertices (the welded seam ring; the
+    # belly leans it slightly outside y=0). A wider band would catch the
+    # crown already climbing away from the rim -- since the crown is
+    # ADDED through the roll zone (continuous convex roll-over, no fade)
+    # that recovery is by design and not what this assertion pins.
+    rim = mid[mid[:, 1] < 0.5]
+    z_rim = rim[:, 2].max() if len(rim) else None
     z_center = ztop(250, tol=6)
     assert z_rim is not None and z_center is not None
     # Rim rolled down well below the slab top (raster limits exact -roll).
