@@ -304,3 +304,42 @@ def test_symmetric_panel_pillows_symmetrically():
     # 6 mm triangulation, not the field).
     assert np.abs(Z - Z[:, ::-1]).max() < 0.8
     assert np.abs(Z - Z[::-1, :]).max() < 0.8
+
+
+def test_dxf_open_entity_chaining_watertight():
+    """Outlines drawn as separate open LINE/ARC entities (the way most
+    CAD packages export a profile) must chain into one closed part, and
+    the result must be watertight -- regression for the Pedal.DXF file
+    (2 LINEs + 2 ARCs, plus straight stretches whose densified points
+    are exactly collinear, which used to tear the cap/wall weld)."""
+    import ezdxf
+
+    fixtures_gen.FIXTURES.mkdir(exist_ok=True)
+    path = fixtures_gen.FIXTURES / "chained_pill.dxf"
+    doc = ezdxf.new()
+    msp = doc.modelspace()
+    # 100x20 pill: two straight lines + two semicircular end arcs,
+    # all as separate open entities (endpoints meet exactly).
+    msp.add_line((10, 0), (90, 0))
+    msp.add_arc(center=(90, 10), radius=10, start_angle=270, end_angle=90)
+    msp.add_line((90, 20), (10, 20))
+    msp.add_arc(center=(10, 10), radius=10, start_angle=90, end_angle=270)
+    doc.saveas(path)
+
+    parts = import_2d.load_2d_as_parts(str(path), scale=1.0, thickness=20.0, roundover=5.0)
+    assert len(parts) == 1
+    part = parts[0]
+    assert part["classification"] == "pillow"
+    pv, pf = part["vertices"].astype(float), part["faces"].astype(int)
+    assert pv[:, 0].max() - pv[:, 0].min() == pytest.approx(100.0, abs=0.5)
+    assert pv[:, 1].max() - pv[:, 1].min() == pytest.approx(20.0, abs=0.5)
+
+    def open_edges(v, f):
+        e = np.sort(np.concatenate([f[:, [0, 1]], f[:, [1, 2]], f[:, [2, 0]]]), axis=1)
+        _, counts = np.unique(e, axis=0, return_counts=True)
+        return int((counts == 1).sum())
+
+    assert open_edges(pv, pf) == 0, "extruded slab must be watertight"
+    v, f = pillow.pillow_panel(pv, pf, edge_roll=5.0, res=2.0, grid_step=6.0)
+    assert np.isfinite(v).all()
+    assert open_edges(v, f) == 0, "pillowed part must be watertight"

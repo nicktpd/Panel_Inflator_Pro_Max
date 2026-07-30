@@ -319,8 +319,29 @@ def pillow_panel(
     # apply -- culling them left pinholes at the rim corners (open edges
     # in the export). Genuine hole-spanning bridges are still culled:
     # away from a cutout's rim the raw distance is exactly 0.
+    # Boundary-band triangles (ring/collar only) hug the rim, where the
+    # raster's bilinear distance cannot decide which side of the outline
+    # a centroid is on: legitimate corner fans sit a few tenths of a mm
+    # INSIDE, while the multi-level sliver "flaps" the collinearity nudge
+    # leaves along the convex-hull chords sit just OUTSIDE (kept flaps
+    # make top boundary edges the walls don't have = open seams). Decide
+    # those by an exact winding-number test against the true outline
+    # segments; everything else keeps the centroid-distance cull.
     boundary_band = (tri.simplices < len(ring_xy) + len(collar)).all(axis=1)
-    keep_tri |= boundary_band & (cd > 1e-6)
+    if len(segs) and boundary_band.any():
+        near_rim = boundary_band & ~keep_tri
+        idx = np.nonzero(near_rim)[0]
+        if len(idx):
+            inside = meshops.winding_inside(cent[idx], segs)
+            keep_tri[idx[inside]] = True
+        # Flaps can also sneak past CULL_DIST via bilinear bleed: any
+        # boundary-band triangle already kept must ALSO be truly inside.
+        idx2 = np.nonzero(boundary_band & keep_tri)[0]
+        if len(idx2):
+            inside2 = meshops.winding_inside(cent[idx2], segs)
+            keep_tri[idx2[~inside2]] = False
+    else:
+        keep_tri |= boundary_band & (cd > 1e-6)
     new_f = tri.simplices[keep_tri]
     # Delaunay orientation is not guaranteed; make the new top face up.
     new_f = meshops.ensure_up_normals(pts2d, new_f)

@@ -172,7 +172,9 @@ def top_boundary_segments(pv: np.ndarray, pf: np.ndarray, zmax: float | None = N
 
     Edges referenced by exactly one flat-top face are the border of the
     top region -- the panel's true outline (and hole rims) with no raster
-    involved. Order doesn't matter for distance queries.
+    involved. Segments keep the FACE WINDING's direction (up-facing CCW
+    faces walk the outline CCW and holes CW), so winding-number
+    inside/outside tests work; plain distance queries don't care.
     """
     vtop = top_vertex_mask(pv, zmax)
     ftop = pf[vtop[pf].all(axis=1)]
@@ -180,9 +182,39 @@ def top_boundary_segments(pv: np.ndarray, pf: np.ndarray, zmax: float | None = N
         return np.empty((0, 2, 2))
     edges = np.concatenate([ftop[:, [0, 1]], ftop[:, [1, 2]], ftop[:, [2, 0]]])
     key = np.sort(edges, axis=1)
-    uniq, counts = np.unique(key, axis=0, return_counts=True)
-    border = uniq[counts == 1]
+    uniq, first, counts = np.unique(
+        key, axis=0, return_index=True, return_counts=True
+    )
+    border = edges[first[counts == 1]]  # original direction, not sorted
     return pv[border][:, :, :2].astype(np.float64)
+
+
+def winding_inside(pts_xy: np.ndarray, segs: np.ndarray) -> np.ndarray:
+    """Exact inside test for points vs oriented boundary segments.
+
+    Sums the signed angles each directed segment subtends at each point:
+    ~+-2*pi inside a CCW outline (0 inside its CW holes), ~0 outside.
+    Used for triangles hugging the rim, where the raster's bilinear
+    distance can't resolve which side of the outline a centroid is on.
+    Vectorized over chunks; cost is points x segments, so callers pass
+    only near-rim candidates.
+    """
+    if not len(pts_xy):
+        return np.zeros(0, dtype=bool)
+    a = segs[:, 0]
+    b = segs[:, 1]
+    out = np.empty(len(pts_xy), dtype=bool)
+    chunk = max(1, int(2_000_000 / max(len(segs), 1)))
+    for s in range(0, len(pts_xy), chunk):
+        p = pts_xy[s : s + chunk][:, None, :]
+        ra = a[None, :, :] - p
+        rb = b[None, :, :] - p
+        ang = np.arctan2(
+            ra[:, :, 0] * rb[:, :, 1] - ra[:, :, 1] * rb[:, :, 0],
+            ra[:, :, 0] * rb[:, :, 0] + ra[:, :, 1] * rb[:, :, 1],
+        )
+        out[s : s + chunk] = np.abs(ang.sum(axis=1)) > np.pi
+    return out
 
 
 def _dist_to_segments(pts: np.ndarray, segs: np.ndarray, res: float) -> np.ndarray:

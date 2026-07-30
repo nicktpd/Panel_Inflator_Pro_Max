@@ -139,6 +139,39 @@ panel (cell CENTRES mirror-symmetric, stamping by rounding), which
 makes every grid-derived field exactly symmetric for symmetric
 outlines. Engine v6.
 
+### Seventh round (user's Pedal.DXF failed to import)
+
+The file draws one outline as 2 LINEs + 2 ARCs -- separate OPEN
+entities meeting end-to-end, which most CAD packages export. The
+importer only accepted individually-closed entities (and skipped LINE
+entirely). Added `_chain_fragments`: open entities are stitched into
+closed loops by endpoint matching (1 mm tolerance); dead-end fragments
+(dimension leaders, centerlines) are dropped as before. LINE joined
+the accepted entity kinds; arc flattening tightened to 0.1 mm sagitta
+(0.5 mm made ~20 mm facets that caught specular light on the roll).
+
+Fixing that exposed a deep watertightness bug on straight/faceted
+outlines: densified straight stretches are EXACTLY collinear, and
+unconstrained Delaunay caps/tops handle the degenerate hull strip
+unreliably (qhull-version/coordinate dependent), tearing the cap/wall
+weld (26 open edges on the pedal slab; the plain rectangle only worked
+by luck). Fix trio, applied identically to caps and the pillowed top:
+
+- `_nudge_collinear`: exactly-collinear ring points get a deterministic
+  0.01-0.02 mm inward dogleg (varied per point -- a constant offset
+  just recreates a collinear row at the new depth);
+- a dense collar row ~1.2 mm inside the boundary locks every rim
+  segment in as a Delaunay edge (the pillow top already had collars);
+- boundary-only triangles are culled by an EXACT inside test (shapely
+  contains for the caps; winding-number against the true oriented
+  outline segments for the top -- `meshops.winding_inside`), because
+  the raster's bilinear distance cannot resolve which side of the
+  outline a rim-hugging sliver sits on.
+
+Result: rectangle, circle and pedal are watertight (0 open edges) at
+preview and export; regression test builds a LINE+ARC pill DXF and
+asserts chaining + watertightness end-to-end.
+
 ### Fifth round (user: shape is right, but peak/corner LINES on top)
 
 Driving the crown with the raw min-distance printed the field's slope

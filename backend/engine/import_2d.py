@@ -36,13 +36,21 @@ from shapely.geometry.polygon import orient
 
 from . import import_stl
 
-# Chordal tolerance for flattening curves, in mm.
-FLATTEN_TOL = 0.5
+# Chordal tolerance for flattening curves, in mm. 0.1 keeps the facet
+# sagitta invisible on upholstery-scale arcs (a 125 mm radius flattens to
+# ~10 mm chords); the old 0.5 produced ~20 mm chords whose flats caught
+# specular light on the rolled edge.
+FLATTEN_TOL = 0.1
 # Sample spacing along segments when flattening (keeps chord error far
 # below FLATTEN_TOL for typical panel-scale curvature).
 SAMPLE_STEP = 2.0
 # Rings with area below this are noise and dropped (mm^2).
 MIN_RING_AREA = 4.0
+# Endpoint-matching tolerance (mm) when chaining OPEN entities
+# (LINE/ARC/open polylines) into closed loops. Real CAD exports commonly
+# draw one outline as many separate entities that meet end-to-end;
+# 1 mm absorbs sloppy drafting without gluing distinct parts together.
+CHAIN_TOL = 1.0
 
 
 # ---------------------------------------------------------------------------
@@ -86,12 +94,69 @@ def _rings_from_svg(path: str, scale: float) -> list[np.ndarray]:
     return rings
 
 
+def _chain_fragments(frags: list[np.ndarray], tol: float = CHAIN_TOL) -> list[np.ndarray]:
+    """Stitch open point-chains (mm) into closed rings by endpoint matching.
+
+    Real CAD exports very often draw ONE outline as many separate open
+    entities -- e.g. two LINEs and two ARCs meeting end-to-end (the
+    "Pedal" file that motivated this). Greedy chaining: grow a chain by
+    appending any fragment whose start or end lies within ``tol`` of the
+    chain's end (reversing the fragment if needed); when neither end can
+    grow, flip the chain once and keep trying; a chain whose two ends
+    meet within ``tol`` becomes a ring. Dead-end chains (genuinely open
+    geometry: dimension leaders, centerlines) are dropped, same as open
+    entities always were.
+    """
+    frags = [np.asarray(f, dtype=np.float64) for f in frags if len(f) >= 2]
+    used = [False] * len(frags)
+    rings: list[np.ndarray] = []
+    for i in range(len(frags)):
+        if used[i]:
+            continue
+        used[i] = True
+        chain = frags[i]
+        flipped_once = False
+        while True:
+            if len(chain) >= 3 and np.linalg.norm(chain[0] - chain[-1]) < tol:
+                rings.append(chain)
+                break
+            grew = False
+            end = chain[-1]
+            for j in range(len(frags)):
+                if used[j]:
+                    continue
+                fj = frags[j]
+                if np.linalg.norm(fj[0] - end) < tol:
+                    chain = np.vstack([chain, fj[1:]])
+                    used[j] = True
+                    grew = True
+                    break
+                if np.linalg.norm(fj[-1] - end) < tol:
+                    chain = np.vstack([chain, fj[::-1][1:]])
+                    used[j] = True
+                    grew = True
+                    break
+            if grew:
+                flipped_once = False
+                continue
+            if not flipped_once:
+                chain = chain[::-1]
+                flipped_once = True
+                continue
+            break  # dead end on both sides: not a closed outline
+    return rings
+
+
 def _rings_from_dxf(path: str, scale: float) -> tuple[list[np.ndarray], list[dict]]:
     """Closed rings + text labels from a DXF.
 
-    Outline geometry comes only from LWPOLYLINE/POLYLINE/CIRCLE/ELLIPSE/
+    Outline geometry comes from LINE/LWPOLYLINE/POLYLINE/CIRCLE/ELLIPSE/
     ARC/SPLINE, flattened through ezdxf's path adaptor at the chordal
-    tolerance. Open entities are skipped: a panel outline must be closed.
+    tolerance. Entities that are closed by themselves become rings
+    directly; OPEN entities (lines, arcs, unclosed polylines) are
+    collected and chained end-to-end into rings (_chain_fragments) --
+    many CAD exports draw one outline as separate segments. Fragments
+    that never close (dimension leaders, centerlines) are dropped.
 
     Everything else in the file is tolerated. Annotation (TEXT/MTEXT --
     panel keys, dimensions, quantities) is deliberately NOT geometry: it
@@ -103,6 +168,7 @@ def _rings_from_dxf(path: str, scale: float) -> tuple[list[np.ndarray], list[dic
 
     doc = ezdxf.readfile(path)
     rings: list[np.ndarray] = []
+    fragments: list[np.ndarray] = []
     labels: list[dict] = []
     for entity in doc.modelspace():
         kind = entity.dxftype()
@@ -119,7 +185,8 @@ def _rings_from_dxf(path: str, scale: float) -> tuple[list[np.ndarray], list[dic
                 pass
             continue
         if kind not in (
-            "LWPOLYLINE", "POLYLINE", "CIRCLE", "ELLIPSE", "ARC", "SPLINE",
+            "LINE", "LWPOLYLINE", "POLYLINE", "CIRCLE", "ELLIPSE", "ARC",
+            "SPLINE",
         ):
             continue
         try:
@@ -131,12 +198,14 @@ def _rings_from_dxf(path: str, scale: float) -> tuple[list[np.ndarray], list[dic
         # otherwise mean 12.7 mm chords -- visibly polygonal circles).
         tol = FLATTEN_TOL / scale
         pts = np.array([(v.x, v.y) for v in epath.flattening(tol)], dtype=np.float64)
-        if len(pts) < 3:
+        if len(pts) < 2:
             continue
         closed = epath.is_closed or np.linalg.norm(pts[0] - pts[-1]) < tol * 4
-        if not closed:
-            continue
-        rings.append(pts * scale)
+        if closed and len(pts) >= 3:
+            rings.append(pts * scale)
+        else:
+            fragments.append(pts * scale)
+    rings.extend(_chain_fragments(fragments))
     return rings, labels
 
 
@@ -161,6 +230,48 @@ def _densify_ring(ring: np.ndarray, max_seg: float = SAMPLE_STEP) -> np.ndarray:
             for j in range(1, k):
                 out.append(a + (b - a) * (j / k))
     return np.asarray(out, dtype=np.float64)
+
+
+def _nudge_collinear(ring: np.ndarray, eps: float = 0.01) -> np.ndarray:
+    """Nudge exactly-collinear ring points ~``eps`` mm toward the material.
+
+    Densifying a straight outline stretch produces EXACTLY collinear
+    points. A boundary that is locally straight makes the cap/top
+    Delaunay triangulations fragile there: the strip between the convex
+    hull's long chord and the boundary degenerates, and the resulting
+    sliver handling tears the cap/wall weld open along straight and
+    coarsely-flattened edges. A ~0.01 mm inward dogleg is far below
+    anything visible (or cuttable), and because walls, caps and the
+    pillow top all reuse the same ring arrays, everything stays welded.
+
+    The amplitude VARIES per point (deterministically, from the point
+    index): with a constant nudge the whole displaced row is collinear
+    again at its new offset, and the hull-chord strip collapses into a
+    few giant slivers that survive area-based culls. Varied depths break
+    the strip into sub-0.05 mm^2 pieces the caller's micro-sliver cull
+    removes cleanly. Inward = left of travel: the exterior is CCW and
+    holes are CW, so the material side is the left side for both.
+    """
+    n = len(ring)
+    if n < 3:
+        return ring
+    prev = np.roll(ring, 1, axis=0)
+    nxt = np.roll(ring, -1, axis=0)
+    v1 = ring - prev
+    v2 = nxt - ring
+    cross = v1[:, 0] * v2[:, 1] - v1[:, 1] * v2[:, 0]
+    seg = nxt - prev
+    seglen = np.linalg.norm(seg, axis=1)
+    collinear = (np.abs(cross) < 1e-9 * np.maximum(seglen, 1.0) ** 2) & (seglen > 1e-9)
+    if not collinear.any():
+        return ring
+    left = np.column_stack([-seg[:, 1], seg[:, 0]]) / np.maximum(seglen, 1e-12)[:, None]
+    # Deterministic per-index variation in [1, 2): reproducible meshes
+    # for identical inputs (cache keys hash the result).
+    amp = eps * (1.0 + ((np.arange(n) * 2654435761) % 97) / 97.0)
+    out = ring.copy()
+    out[collinear] += left[collinear] * amp[collinear, None]
+    return out
 
 
 def _clean_ring(ring: np.ndarray) -> np.ndarray | None:
@@ -253,6 +364,14 @@ def triangulate_cap(poly: sg.Polygon) -> tuple[np.ndarray, np.ndarray]:
 # ---------------------------------------------------------------------------
 
 
+def _ring_inward_offset(ring: np.ndarray, off: float) -> np.ndarray:
+    """Each ring point moved ``off`` mm along its inward (left) normal."""
+    seg = np.roll(ring, -1, axis=0) - np.roll(ring, 1, axis=0)
+    seglen = np.linalg.norm(seg, axis=1)
+    left = np.column_stack([-seg[:, 1], seg[:, 0]]) / np.maximum(seglen, 1e-12)[:, None]
+    return ring + left * off
+
+
 def _delaunay_cap(
     loops: list[np.ndarray], test_poly: sg.Polygon
 ) -> tuple[np.ndarray, np.ndarray]:
@@ -262,17 +381,31 @@ def _delaunay_cap(
     zero-area slivers on collinear boundary points, trimesh's processing
     deletes those, and the rim tears open (production case: 1225 open
     edges on a plain square). Delaunay over the exact loop vertices plus
-    a coarse interior grid never produces degenerate boundary slivers,
-    and with 2 mm boundary spacing the rim segments are always Delaunay
-    edges — the cap welds to the walls by construction. Triangles are
-    kept if their centroid is inside (or within 0.25 mm of) the polygon,
-    which tolerates the locally self-touching loops of pinched tails.
+    a coarse interior grid never produces degenerate boundary slivers --
+    and, like the pillow top's collar rings, a dense COLLAR row ~1.2 mm
+    inside the boundary locks every rim segment in as a Delaunay edge
+    (without it, a chord skimming a nearly-straight boundary stretch has
+    an empty circumcircle and the cap boundary can skip ring points --
+    the interior grid keeps 3 mm clear of the boundary, so nothing else
+    forbids such chords). The cap therefore welds to the walls by
+    construction. Triangles are kept if their centroid is inside (or
+    within 0.25 mm of) the polygon, which tolerates the locally
+    self-touching loops of pinched tails; micro-slivers from the
+    collinearity nudge are culled by area at the end.
     """
     from scipy.spatial import Delaunay
 
     from . import meshops
 
     pts = np.vstack(loops)
+    collar = np.vstack([_ring_inward_offset(lp, 1.2) for lp in loops])
+    cpts = shapely.points(collar)
+    ok = shapely.contains(test_poly, cpts) & (
+        shapely.distance(test_poly.boundary, cpts) > 0.5
+    )
+    collar = collar[ok]
+    if len(collar):
+        pts = np.vstack([pts, collar])
     minx, miny, maxx, maxy = test_poly.bounds
     step = 6.0
     gx, gy = np.meshgrid(
@@ -288,7 +421,22 @@ def _delaunay_cap(
     allpts = np.vstack([pts, gp]) if len(gp) else pts
     tri = Delaunay(allpts)
     cent = allpts[tri.simplices].mean(axis=1)
-    keep = shapely.dwithin(test_poly, shapely.points(cent), 0.25)
+    cpts = shapely.points(cent)
+    # Boundary-only triangles (every vertex on a loop) hug the rim; the
+    # collinearity nudge (_nudge_collinear) leaves multi-level sliver
+    # "flaps" between the convex-hull chords and the nudged boundary row,
+    # ALL of whose vertices are loop points and whose centroids sit just
+    # OUTSIDE the polygon. Any of them that survive make cap boundary
+    # edges the walls don't have (open seams), so they are culled by a
+    # strict inside test. Mixed triangles (touching collar/grid points)
+    # keep the 0.25 mm slack that tolerates the locally self-touching
+    # loops of pinched tails.
+    nloop = sum(len(lp) for lp in loops)
+    boundary_only = (tri.simplices < nloop).all(axis=1)
+    inside = shapely.contains(test_poly, cpts)
+    keep = np.where(
+        boundary_only, inside, shapely.dwithin(test_poly, cpts, 0.25)
+    )
     return allpts, meshops.ensure_up_normals(allpts, tri.simplices[keep])
 
 
@@ -324,6 +472,10 @@ def extrude_with_roundover(
         _densify_ring(np.array(h.coords[:-1], dtype=np.float64))
         for h in poly.interiors
     ]
+    # Break exact collinearity so the cap/top Delaunay keeps every
+    # boundary point (see _nudge_collinear); must happen before the
+    # walls are built so walls, caps and the pillow top share vertices.
+    rings = [_nudge_collinear(r) for r in rings]
     poly = sg.Polygon(rings[0], rings[1:])
 
     # Several wall rings between bottom and top: the pillow stage bows

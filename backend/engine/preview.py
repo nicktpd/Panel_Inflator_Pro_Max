@@ -37,7 +37,10 @@ EXPORT_GRID = 6.0
 # 6 = membrane face: interior driven by the Poisson/Spalding wall
 #     distance -- no fold lines on the padded face by construction;
 #     raster lattice centred so all fields mirror symmetric shapes.
-ENGINE_VERSION = 6
+# 7 = chained-entity DXF import (LINE/ARC outlines), finer arc
+#     flattening, collinearity nudge + exact inside culls: watertight
+#     caps/top on every outline shape.
+ENGINE_VERSION = 7
 
 
 def params_key(params: dict, res: float, grid_step: float, mask_version: int) -> str:
