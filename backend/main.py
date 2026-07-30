@@ -229,7 +229,11 @@ def _ensure_part_sources(project: Project) -> Path:
 
 def _effective_params(project: Project, part: PartInfo) -> dict:
     p = part.params if part.params is not None else project.global_params
-    return p.model_dump()
+    out = p.model_dump()
+    # Geometry property, not a user param: rides in the dict so the
+    # per-part cache key covers it.
+    out["edge_roll"] = part.edge_roll
+    return out
 
 
 def _load_mask(project: Project, part: PartInfo) -> dict | None:
@@ -303,6 +307,7 @@ def _do_import(job_id: str, project_id: str, filename: str, options_2d: Import2D
                 auto_classification=raw["classification"],
                 bbox_min=raw["bbox_min"],
                 bbox_max=raw["bbox_max"],
+                edge_roll=raw.get("edge_roll", 0.0),
             )
         )
         preview.save_part_source(cache, i, raw["vertices"], raw["faces"])

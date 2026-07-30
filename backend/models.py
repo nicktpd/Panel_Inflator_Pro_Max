@@ -57,6 +57,9 @@ class PartInfo(BaseModel):
     mask_file: Optional[str] = None
     # Bumped every time the mask is painted, so caches invalidate.
     mask_version: int = 0
+    # Wrapped-edge roll radius (mm) for parts whose source geometry has
+    # sharp top edges (2D imports). 0 for STL parts with real fillets.
+    edge_roll: float = 0.0
 
 
 class Import2DOptions(BaseModel):

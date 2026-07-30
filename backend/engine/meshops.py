@@ -154,14 +154,59 @@ def distance_field(fp: FootprintRaster, sigma: float) -> tuple[np.ndarray, np.nd
     return raw, smooth
 
 
+# Half-width of the smooth saturation knee, in units of the normalized
+# profile value p = (dist/dref)^exp. The hard clip() the reference used
+# has a slope discontinuity exactly where the crown flattens -- it reads
+# as a hard ridge around the top of the bulge. The C1 smooth clamp below
+# blends slope to zero across p in [1-k, 1+k] instead. Values outside
+# the knee are untouched, so the calibrated rise off the edge and the
+# saturated center height are both preserved exactly.
+KNEE_HALF_WIDTH = 0.35
+
+
+def _smooth_clamp(p: np.ndarray, k: float = KNEE_HALF_WIDTH) -> np.ndarray:
+    """C1 clamp of p to <= 1: identity below 1-k, 1 above 1+k, and a
+    slope-matched quadratic blend in between (no crease at either end)."""
+    lo = 1.0 - k
+    out = np.minimum(p, 1.0)
+    band = (p > lo) & (p < 1.0 + k)
+    pb = p[band]
+    out[band] = pb - (pb - lo) ** 2 / (4.0 * k)
+    return out
+
+
 def crown_profile(dist: np.ndarray, crown: float, dref: float, exp: float) -> np.ndarray:
-    """The validated pillow shape: dz = crown * clip(dist/dref, 0, 1) ** exp.
+    """The validated pillow shape with a softened saturation shoulder:
+    dz = crown * smooth_clamp((dist/dref) ** exp).
 
     Edges are pinned (dist=0 -> dz=0); points deeper than dref from any
     edge saturate at the full crown. exp < 1 makes the surface rise fast
     off the edge then flatten into a gentle dome, like stretched vinyl.
+    The smooth clamp rounds the transition into the flat center so the
+    crown has no hard ridge where it stops rising (upholstery never
+    creases); deep-interior points still reach exactly ``crown``.
     """
-    return crown * np.power(np.clip(dist / dref, 0.0, 1.0), exp)
+    p = np.power(np.maximum(dist, 0.0) / dref, exp)
+    return crown * _smooth_clamp(p)
+
+
+def edge_roll_drop(dist_raw: np.ndarray, roll: float) -> np.ndarray:
+    """Height drop (<= 0) of the wrapped-edge roll, vs distance to edge.
+
+    Models the vinyl rolling over the arris of the core as a quarter
+    circle of radius ``roll``: at the outline the surface sits ``roll``
+    below the flat top and leaves the (vertical) side wall tangentially;
+    by ``dist >= roll`` it has flattened out and the drop is 0. Added to
+    the crown profile this makes edge roll + crown one continuous C1
+    height field -- no discrete fillet geometry, no tangent break at the
+    rim, and corners fold down naturally (dist is small on both sides of
+    a corner, like the photographed folds).
+
+    Uses the RAW distance so the roll radius is faithful; the caller may
+    blur the result a touch to hide raster stair-steps.
+    """
+    d = np.clip(dist_raw, 0.0, roll)
+    return np.sqrt(np.maximum(roll * roll - (roll - d) ** 2, 0.0)) - roll
 
 
 def membrane_tension(fp: "FootprintRaster", target_cells: int = 160) -> np.ndarray:

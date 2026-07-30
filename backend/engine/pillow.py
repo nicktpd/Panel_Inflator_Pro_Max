@@ -65,6 +65,7 @@ def pillow_panel(
     sigma: float = 5.0,
     w_exp: float = 1.5,
     tension: float = 0.7,
+    edge_roll: float = 0.0,
     res: float = 2.0,
     grid_step: float = 6.0,
     mask: np.ndarray | None = None,
@@ -77,6 +78,11 @@ def pillow_panel(
     pv, pf : the panel mesh (N x 3 float vertices, M x 3 int faces).
         Not modified; copies are made.
     crown, dref, exp, sigma, w_exp : see models.PillowParams.
+    edge_roll : radius (mm) of the wrapped-edge roll for panels whose
+        source geometry has SHARP top edges (2D-imported slabs). The roll
+        is generated as part of the top height field (see
+        meshops.edge_roll_drop), so edge + crown form one continuous
+        surface. Leave 0 for STL parts whose CAD already models fillets.
     res : raster resolution in mm/cell (2.0 export, 4.0 preview).
     grid_step : spacing in mm of the regenerated top grid (6 export,
         ~10 preview). Coarser = fewer triangles, faster, softer detail.
@@ -132,6 +138,18 @@ def pillow_panel(
     # has no crease line. Always applied; slightly stronger with a mask.
     knee = KNEE_BLUR_SIGMA + (MASK_BLUR_SIGMA if mask_grid is not None else 0.0)
     prof = ndimage.gaussian_filter(prof, sigma=knee)
+
+    # Wrapped-edge roll: fold the top surface down toward every edge
+    # (outline, holes, corners alike) over the roll radius, tangent to the
+    # side walls. Added AFTER the knee blur so the roll radius stays
+    # faithful; its own tiny blur just hides raster stair-steps. This is
+    # what replaces the old discrete 3-ring fillet: edge + crown are now
+    # one continuous height field, so there is no hard rim line and no
+    # corner-inset geometry left to malform.
+    if edge_roll > 0.0:
+        roll = min(edge_roll, thick * 0.45)
+        drop = meshops.edge_roll_drop(dist_raw, roll)
+        prof = prof + ndimage.gaussian_filter(drop, sigma=1.0)
 
     # --- delete flat top, keep sides/fillets/bottom ---
     keep = pf[~vtop[pf].all(axis=1)]

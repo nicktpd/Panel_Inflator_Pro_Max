@@ -192,6 +192,43 @@ def test_tension_suppresses_irregular_but_not_rectangles():
     assert d1[:, 2].max() < d0[:, 2].max() - 0.5, "tension had no effect on the disk"
 
 
+def test_edge_roll_continuous():
+    """The wrapped-edge roll: rim drops by ~roll, surface climbs smoothly
+    through the roll zone into the crown with no tangent break, and the
+    saturated center still reaches exactly thickness + crown."""
+    rect = sg.box(0, 0, 800, 500)
+    v, f = import_2d.extrude_with_roundover(rect, 50.8)
+    assert v[:, 2].max() == pytest.approx(50.8, abs=1e-6)  # sharp slab
+
+    roll = 12.0
+    pv, _ = pillow.pillow_panel(v, f, res=2.0, grid_step=6.0, edge_roll=roll)
+    assert np.isfinite(pv).all()
+    assert pv[:, 2].min() == pytest.approx(0.0, abs=1e-9)
+
+    # Mid-length cross section: top surface z as a function of dist to edge.
+    mid = pv[(np.abs(pv[:, 0] - 400) < 30) & (pv[:, 2] > 30)]
+    def ztop(d, tol=1.5):
+        band = mid[np.abs(mid[:, 1] - d) < tol]
+        return band[:, 2].max() if len(band) else None
+
+    z_rim = ztop(0.5)
+    z_center = ztop(250, tol=6)
+    assert z_rim is not None and z_center is not None
+    # Rim rolled down well below the slab top (raster limits exact -roll).
+    assert z_rim < 50.8 - roll * 0.45
+    # Deep center: full crown preserved despite roll + smooth knee.
+    assert z_center == pytest.approx(50.8 + 32.0, abs=2.0)
+    # Monotonic climb through the roll zone (no fold-back / hard step).
+    heights = [ztop(d) for d in (2, 5, 8, 12, 18, 30)]
+    heights = [h for h in heights if h is not None]
+    assert all(b >= a - 0.3 for a, b in zip(heights, heights[1:])), heights
+
+    # Parts imported via the 2D path carry the roll radius.
+    svg = fixtures_gen.donut_svg(OUTER, HOLE_D)
+    parts = import_2d.load_2d_as_parts(str(svg), scale=1.0, thickness=50.8, roundover=8.0)
+    assert parts[0].get("edge_roll") == 8.0
+
+
 def test_two_disjoint_outlines_two_parts():
     """Multiple disjoint outlines become multiple parts."""
     fixtures_gen.FIXTURES.mkdir(exist_ok=True)

@@ -253,70 +253,6 @@ def triangulate_cap(poly: sg.Polygon) -> tuple[np.ndarray, np.ndarray]:
 # ---------------------------------------------------------------------------
 
 
-def _ring_normals_inward(ring: np.ndarray) -> np.ndarray:
-    """Per-vertex UNIT bisector normals pointing INTO the material.
-
-    Rings are oriented so material lies to the LEFT of travel (CCW shells,
-    CW holes -- shapely orient() guarantees this), so the left normal of
-    the angle bisector points inward for both.
-
-    Deliberately NOT miter-scaled: extending a convex corner vertex to
-    the miter point (d / cos(half-angle)) pushes it past its neighbours'
-    offset line, and the inset ring then overlaps itself along the rim
-    (production case: every corner of a plain square leaked open edges).
-    A plain d-along-the-bisector offset under-cuts convex corners into a
-    small chamfer instead -- which is exactly how wrapped vinyl behaves
-    at a real corner fold (see the corner photos in reference/NOTES.md:
-    the fabric rounds off, it never forms a sharp miter).
-    """
-    prev = np.roll(ring, 1, axis=0)
-    nxt = np.roll(ring, -1, axis=0)
-    t1 = ring - prev
-    t2 = nxt - ring
-    t1 /= np.maximum(np.linalg.norm(t1, axis=1, keepdims=True), 1e-12)
-    t2 /= np.maximum(np.linalg.norm(t2, axis=1, keepdims=True), 1e-12)
-    n1 = np.column_stack([-t1[:, 1], t1[:, 0]])  # left normals
-    n2 = np.column_stack([-t2[:, 1], t2[:, 0]])
-    bis = n1 + n2
-    bn = np.linalg.norm(bis, axis=1, keepdims=True)
-    # Degenerate (180 degree turn): fall back to one edge normal.
-    flat = bn[:, 0] < 1e-9
-    bis[flat] = n1[flat]
-    bn[flat] = 1.0
-    return bis / bn
-
-
-def _inset_ring_safe(
-    poly: sg.Polygon, ring: np.ndarray, miter_normals: np.ndarray, d: float
-) -> np.ndarray:
-    """Inset ring vertices by ``d`` without crossing the outline.
-
-    Near a sharp tail (production case: a 52x8-inch right triangle, ~9
-    degree tip) the local width drops below 2*d and plain perpendicular
-    offsets from the two converging edges cross each other, folding the
-    loft. For each vertex we try the full miter offset and progressively
-    smaller fractions, keeping the candidate (still inside the polygon)
-    with the best clearance-to-boundary, capped at the requested d. Wide
-    regions keep the exact offset; a narrowing tail pinches smoothly to
-    its centreline, which is what wrapped vinyl does anyway.
-    """
-    if d <= 1e-9:
-        return ring.copy()
-    n = len(ring)
-    fracs = np.array([1.0, 0.5, 0.25, 0.125])
-    stack = np.stack([ring + miter_normals * (d * f) for f in fracs])  # (4, n, 2)
-    pts = shapely.points(stack.reshape(-1, 2))
-    inside = shapely.contains(poly, pts).reshape(len(fracs), n)
-    clearance = shapely.distance(poly.boundary, pts).reshape(len(fracs), n)
-    score = np.where(inside, np.minimum(clearance, d), -np.inf)
-    score -= 1e-4 * (1.0 - fracs)[:, None]  # prefer the fuller offset on ties
-    best = score.argmax(axis=0)
-    out = stack[best, np.arange(n)]
-    hopeless = ~np.isfinite(score[best, np.arange(n)])
-    out[hopeless] = ring[hopeless]  # tighter than the tip itself: stay put
-    return out
-
-
 def _delaunay_cap(
     loops: list[np.ndarray], test_poly: sg.Polygon
 ) -> tuple[np.ndarray, np.ndarray]:
@@ -357,96 +293,67 @@ def _delaunay_cap(
 
 
 def extrude_with_roundover(
-    poly: sg.Polygon, thickness: float, roundover: float
+    poly: sg.Polygon, thickness: float, roundover: float = 0.0
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Extrude a polygon to ``thickness`` with a top-edge fillet.
+    """Extrude a polygon into a straight, sharp-edged slab.
 
-    The fillet is a quarter circle approximated by 3 loft rings (spec
-    allows exactly this): at angle phi the ring is inset by r*(1-cos phi)
-    and raised to z = (T - r) + r*sin phi. The top cap reuses the last
-    loft ring's exact vertices so the seam welds bit-identically. All
-    rings share vertex count, so walls are clean closed quad strips;
-    caps are earcut-triangulated. Insets are clearance-limited (see
-    _inset_ring_safe) so sharp tails pinch instead of self-intersecting.
+    The slab is the honest pre-pillow core (board + foam, square arris).
+    The wrapped-edge roundover is NOT modelled as fillet geometry any
+    more: it is applied by the pillow stage as part of one continuous
+    edge-roll + crown height field (``pillow_panel(edge_roll=...)``).
+    The old discrete 3-ring fillet loft put a tangent break at the rim
+    (a visibly hard top edge) and its corner insets were a chronic source
+    of malformed geometry; a height field has neither problem. The
+    ``roundover`` argument is kept for signature compatibility and is
+    recorded by the caller as the part's edge_roll.
+
+    Walls are quad strips over the densified rings; caps use the
+    boundary-conforming Delaunay triangulation (earcut fans over
+    densified collinear boundary points create zero-area slivers that
+    mesh processing deletes, tearing the rim open).
     """
     import trimesh
 
     thickness = float(thickness)
-    r = float(min(roundover, thickness * 0.45))
 
-    rings = [np.array(poly.exterior.coords[:-1], dtype=np.float64)]
-    rings += [np.array(h.coords[:-1], dtype=np.float64) for h in poly.interiors]
-
-    if r > 1e-6:
-        phis = [0.0, math.radians(30), math.radians(60), math.radians(90)]
-        levels = [(0.0, 0.0)] + [
-            ((thickness - r) + r * math.sin(phi), r * (1.0 - math.cos(phi))) for phi in phis
-        ]
-    else:
-        levels = [(0.0, 0.0), (thickness, 0.0)]
+    # Densify here too (the import path already does): direct callers may
+    # pass polygons with bare corner vertices (e.g. shapely boxes), and
+    # everything downstream depends on ~2 mm boundary density.
+    rings = [_densify_ring(np.array(poly.exterior.coords[:-1], dtype=np.float64))]
+    rings += [
+        _densify_ring(np.array(h.coords[:-1], dtype=np.float64))
+        for h in poly.interiors
+    ]
+    poly = sg.Polygon(rings[0], rings[1:])
 
     verts: list[np.ndarray] = []
     faces: list[np.ndarray] = []
-    top_loops: list[np.ndarray] = []  # last-level loop per ring, for the cap
-
     for ring in rings:
-        normals = _ring_normals_inward(ring)
-        starts = []
-        last_loop = ring
-        for z, inset in levels:
-            starts.append(sum(len(v) for v in verts))
-            loop = _inset_ring_safe(poly, ring, normals, inset)
-            verts.append(np.column_stack([loop, np.full(len(ring), z)]))
-            last_loop = loop
-        top_loops.append(last_loop)
+        start = sum(len(v) for v in verts)
         n = len(ring)
+        verts.append(np.column_stack([ring, np.zeros(n)]))
+        verts.append(np.column_stack([ring, np.full(n, thickness)]))
         idx = np.arange(n)
         nxt = (idx + 1) % n
-        for k in range(len(levels) - 1):
-            a0 = starts[k] + idx
-            a1 = starts[k] + nxt
-            b0 = starts[k + 1] + idx
-            b1 = starts[k + 1] + nxt
-            # Material is left of travel, so outward is right: this
-            # winding gives outward-facing wall normals for both shells
-            # and holes.
-            faces.append(np.column_stack([a0, a1, b1]))
-            faces.append(np.column_stack([a0, b1, b0]))
+        a0, a1 = start + idx, start + nxt
+        b0, b1 = start + n + idx, start + n + nxt
+        # Material is left of travel, so outward is right: this winding
+        # gives outward-facing wall normals for both shells and holes.
+        faces.append(np.column_stack([a0, a1, b1]))
+        faces.append(np.column_stack([a0, b1, b0]))
 
-    # Bottom cap (faces down) on the original dense rings. Same conforming
-    # triangulation as the top: earcut fans over densified (collinear)
-    # boundary points create zero-area slivers that mesh processing then
-    # deletes, tearing the rim open.
-    rings0 = [np.array(poly.exterior.coords[:-1], dtype=np.float64)]
-    rings0 += [np.array(h.coords[:-1], dtype=np.float64) for h in poly.interiors]
-    v2d, f2d = _delaunay_cap(rings0, poly)
+    v2d, f2d = _delaunay_cap(rings, poly)
     base = sum(len(v) for v in verts)
     verts.append(np.column_stack([v2d, np.zeros(len(v2d))]))
-    faces.append(f2d[:, ::-1] + base)
-
-    # Top cap (faces up) built directly ON the last loft level's vertices
-    # so the rim welds to the walls by construction. The loop polygon may
-    # be locally self-touching at a pinched tail; a buffer(0)-repaired
-    # COPY is used only as the containment test, never for the vertices.
+    faces.append(f2d[:, ::-1] + base)  # bottom cap faces down
     base = sum(len(v) for v in verts)
-    if r > 1e-6:
-        top_poly = sg.Polygon(top_loops[0], top_loops[1:])
-        if not top_poly.is_valid:
-            top_poly = top_poly.buffer(0)
-            if top_poly.is_empty:
-                raise ValueError(
-                    "roundover radius too large for this outline; reduce it"
-                )
-        v2d, f2d = _delaunay_cap(top_loops, top_poly)
-    else:
-        v2d, f2d = _delaunay_cap(rings0, poly)
     verts.append(np.column_stack([v2d, np.full(len(v2d), thickness)]))
-    faces.append(f2d + base)
+    faces.append(f2d + base)  # top cap faces up
 
     v = np.vstack(verts)
     f = np.vstack(faces)
-    # Merge coincident seam vertices (cap rims == top/bottom loft rings)
-    # so the pillow engine sees one connected solid with a welded seam.
+    # Merge coincident seam vertices (cap rims == wall rings) so the
+    # pillow engine sees one connected solid with a welded seam.
     mesh = trimesh.Trimesh(vertices=v, faces=f, process=True)
     mesh.merge_vertices()
     return np.asarray(mesh.vertices), np.asarray(mesh.faces)
@@ -588,6 +495,12 @@ def load_2d_as_parts(
         v, f = extrude_with_roundover(poly, thickness, roundover)
         part_arrays.append((v, f))
 
-    return import_stl.describe_parts_from_arrays(
+    parts = import_stl.describe_parts_from_arrays(
         part_arrays, hardware_threshold=0, name_hints=hints
     )
+    # The roundover is applied by the pillow stage as a continuous
+    # edge-roll height field; record the radius on every pillowable part.
+    for part in parts:
+        if part["classification"] == "pillow":
+            part["edge_roll"] = float(roundover)
+    return parts

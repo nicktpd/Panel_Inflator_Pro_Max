@@ -88,6 +88,7 @@ def compute_part_cached(
         sigma=params["sigma"],
         w_exp=params.get("w_exp", 1.5),
         tension=params.get("tension", 0.7),
+        edge_roll=params.get("edge_roll", 0.0),
         res=res,
         grid_step=grid_step,
         mask=mask,
