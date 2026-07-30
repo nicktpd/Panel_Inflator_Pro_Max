@@ -527,30 +527,9 @@ _QTY_RE = re.compile(r"^QTY\.?\s*[x×]?\s*(\d+)", re.IGNORECASE)
 _KEY_RE = re.compile(r"^[A-Za-z][A-Za-z0-9\-]{0,3}$")
 
 
-def _name_hint_for(poly: sg.Polygon, labels: list[dict]) -> str | None:
-    """Derive a display name for one outline from nearby annotation text.
-
-    Labels inside the outline win; if none are inside (some drawings put
-    the caption beside the part), the nearest label cluster within one
-    bounding-box diagonal is used. The shortest key-looking string is the
-    panel key; a "QTY n" line becomes a multiplier suffix.
-    """
-    if not labels:
-        return None
-    inside, nearby = [], []
-    minx, miny, maxx, maxy = poly.bounds
-    diag = math.hypot(maxx - minx, maxy - miny)
-    for lab in labels:
-        if not lab["text"]:
-            continue
-        pt = sg.Point(lab["x"], lab["y"])
-        if poly.contains(pt):
-            inside.append(lab)
-        elif poly.exterior.distance(pt) < diag:
-            nearby.append(lab)
-    pool = inside or nearby
-    if not pool:
-        return None
+def _pool_to_name(pool: list[dict]) -> str | None:
+    """Panel name from a label pool: shortest key-looking string is the
+    panel key; a "QTY n" line becomes a multiplier suffix."""
     key = None
     qty = None
     for lab in pool:
@@ -566,6 +545,47 @@ def _name_hint_for(poly: sg.Polygon, labels: list[dict]) -> str | None:
     if qty and qty > 1:
         name += f" ×{qty}"
     return name
+
+
+def _name_hints(polys: list[sg.Polygon], labels: list[dict]) -> list[str | None]:
+    """Per-part display names from annotation text.
+
+    Two passes over ALL parts: labels INSIDE an outline name that part
+    and are thereby claimed; only then do unnamed parts fall back to the
+    nearest UNCLAIMED label cluster within one bounding-box diagonal
+    (some drawings put the caption beside the part). Without the
+    claiming, an unlabeled part sitting next to a labeled one stole its
+    neighbour's caption and two parts showed the same name.
+    """
+    hints: list[str | None] = [None] * len(polys)
+    if not labels:
+        return hints
+    labs = [lab for lab in labels if lab["text"]]
+    claimed: set[int] = set()
+    # Pass 1: labels contained in an outline.
+    for i, poly in enumerate(polys):
+        pool = []
+        for j, lab in enumerate(labs):
+            if poly.contains(sg.Point(lab["x"], lab["y"])):
+                pool.append(lab)
+                claimed.add(j)
+        if pool:
+            hints[i] = _pool_to_name(pool)
+    # Pass 2: nearest unclaimed labels for still-unnamed parts.
+    for i, poly in enumerate(polys):
+        if hints[i] is not None:
+            continue
+        minx, miny, maxx, maxy = poly.bounds
+        diag = math.hypot(maxx - minx, maxy - miny)
+        pool = [
+            lab
+            for j, lab in enumerate(labs)
+            if j not in claimed
+            and poly.exterior.distance(sg.Point(lab["x"], lab["y"])) < diag
+        ]
+        if pool:
+            hints[i] = _pool_to_name(pool)
+    return hints
 
 
 # ---------------------------------------------------------------------------
@@ -598,7 +618,7 @@ def parse_polygons(path: str, scale: float = 1.0) -> tuple[list[sg.Polygon], lis
 
     # Name parts from annotation while text and outlines still share the
     # drawing's coordinate system.
-    hints = [_name_hint_for(poly, labels) for poly in polys]
+    hints = _name_hints(polys, labels)
     return polys, hints
 
 
