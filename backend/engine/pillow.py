@@ -141,23 +141,41 @@ def pillow_panel(
     segs = meshops.top_boundary_segments(pv, pf, zmax)
     dist_raw, dist = meshops.distance_field(fp, sigma * cell, segments=segs)
 
+    # The crown's drive field: EXACT segment distance near the rim,
+    # cross-faded into the gaussian-smoothed field with depth.
+    #   * Near the edge the raw field is what makes the wrap right: it is
+    #     exactly 0 at the outline, so the crown is truly pinned there
+    #     and the edge roll's full drop survives (the smoothed field's
+    #     bleed past the boundary propped the rim up several mm -- a
+    #     visibly taller edge wall).
+    #   * Deep inside, the raw min-distance field has slope CREASES along
+    #     the medial axis (where the nearest edge switches -- the "spine"
+    #     down a rectangle's middle) and along corner bisectors. Because
+    #     the crown never fully saturates on panel-sized parts, driving
+    #     the crown with raw distance printed those creases onto the top
+    #     as visible peak/diagonal lines. The smoothed field rounds them
+    #     -- the look the top had before the exact-distance rework.
+    # The blend starts past the roll zone and completes over ~2.5x the
+    # blur radius, i.e. where the smoothed field's edge-dip has decayed
+    # to nothing, so the rim behaviour is untouched and no concavity
+    # (bell) can be reintroduced. Shape-generic: works for any outline.
+    roll = min(edge_roll, thick * 0.6) if edge_roll > 0.0 else 0.0
+    sigma_mm = sigma * cell * res  # blur radius in mm (res-invariant)
+    inner = max(roll, 3.0 * res)
+    outer = inner + 2.5 * max(sigma_mm, res)
+    wgt = np.clip((dist_raw - inner) / max(outer - inner, 1e-9), 0.0, 1.0)
+    wgt = wgt * wgt * (3.0 - 2.0 * wgt)
+    d_c = dist_raw * (1.0 - wgt) + dist * wgt
+
     # Tension: pull the crown down where the membrane is more constrained
     # than the nearest-edge distance implies (tapers, pinches, tips). The
     # factor equals 1 on straight panels, so calibration is preserved.
-    # The crown is driven by the RAW distance: it is exact (segment-based)
-    # and perfectly smooth along edges, and -- critically -- exactly 0 at
-    # the outline, so the crown is truly pinned at the rim and the edge
-    # roll's full drop survives. The smoothed field's bleed past the
-    # boundary propped the rim up by several mm (a visibly taller edge
-    # wall); the smoothed field is still what gradient directions and
-    # near-edge falloffs use. Corner miter softening lost by skipping the
-    # blur here is covered by the knee blur, the roll blur and the darts.
-    d_eff = dist_raw
+    d_eff = d_c
     if tension > 0.0:
         tau = meshops.membrane_tension(fp)
         if sigma > 0:
             tau = ndimage.gaussian_filter(tau, sigma=max(sigma * cell * 0.5, 1.0))
-        d_eff = dist_raw * ((1.0 - tension) + tension * tau)
+        d_eff = d_c * ((1.0 - tension) + tension * tau)
 
     prof = meshops.crown_profile(d_eff, crown, dref, exp)
 
@@ -179,7 +197,7 @@ def pillow_panel(
     # which read as a subtle hard band around the dome in the reference
     # comparison. This is what replaces the old discrete 3-ring fillet:
     # edge + crown are one continuous height field with no hard rim line.
-    roll = min(edge_roll, thick * 0.6) if edge_roll > 0.0 else 0.0
+    # (roll itself is computed above, where the drive-field blend needs it.)
     if roll > 0.0:
         # The roll drop is ADDED to the crown, never faded in. Both the
         # crown profile (exp < 1, then smooth-clamped) and the quarter-

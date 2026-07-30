@@ -32,7 +32,9 @@ EXPORT_GRID = 6.0
 # 4 = convex roll-over: crown added through the roll zone (no fade
 #     shelf), raw-distance crown (full rim drop), continuous belly field
 #     across seam, corner pinholes closed.
-ENGINE_VERSION = 4
+# 5 = depth-blended drive field: exact distance near the rim, smoothed
+#     interior (no medial-axis/corner-bisector crease lines on top).
+ENGINE_VERSION = 5
 
 
 def params_key(params: dict, res: float, grid_step: float, mask_version: int) -> str:

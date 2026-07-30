@@ -112,6 +112,19 @@ real driver was found by rendering the mesh with the user's own camera
   the exact-zero distance inside holes). Export is watertight: 0 open
   edges at both resolutions.
 
+### Fifth round (user: shape is right, but peak/corner LINES on top)
+
+Driving the crown with the raw min-distance printed the field's slope
+creases -- the medial-axis "spine" and the corner bisectors -- onto the
+top as visible lines (the crown never fully saturates on panel-sized
+parts, so the creases never flatten out). Fix: the drive field is now a
+DEPTH BLEND -- exact segment distance out to the roll zone (tight rim,
+no bell, no bleed), cross-faded into the gaussian-smoothed field over
+~2.5 blur radii (the interior look the user originally praised). The
+blend weight is a smoothstep of the raw distance itself, so it is
+shape-generic and cannot reintroduce a concave shelf; convexity, wall
+monotonicity and watertightness re-verified after the change.
+
 ### Second calibration round (user viewport feedback on the above)
 
 - Wall ribbing + rim sawtooth were shading artifacts: walls now get
