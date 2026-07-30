@@ -1,0 +1,24 @@
+IMPORTANT — cloud sync exclusions
+=================================
+
+This folder is designed to live in cloud storage (Dropbox / Google Drive /
+OneDrive) and be used from multiple machines. The Python virtual environment
+must NOT be synced: it contains machine-specific compiled binaries, tens of
+thousands of small files, and it will corrupt itself if two machines write
+to it.
+
+Exclude these folders from cloud sync on every machine:
+
+  .venv/               <- the Python virtual environment (per-machine, recreate with setup)
+  __pycache__/         <- Python bytecode caches (safe to delete anytime)
+  projects/*/cache/    <- cached preview/export meshes (regenerated on demand)
+
+How to exclude:
+  - Dropbox:      right-click folder -> "Smart Sync" / selective sync, or use
+                  the "ignored files" feature (dropbox.com/help/syncing-uploads/ignored-files)
+  - Google Drive: use "Mirror files" mode and add .venv to excluded extensions,
+                  or keep the repo outside the mirrored tree and symlink.
+  - OneDrive:     Settings -> Sync and backup -> Advanced -> Exclude folders.
+
+If a machine has a broken or missing .venv, just run setup.bat (Windows) or
+./setup.sh (macOS/Linux) again. It only needs Python 3.11+ installed.

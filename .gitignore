@@ -1,0 +1,10 @@
+.venv/
+__pycache__/
+*.pyc
+projects/*/cache/
+projects/*/uploads/
+tests/fixtures/*.stl
+tests/fixtures/*.glb
+tests/fixtures/*.svg
+tests/fixtures/*.dxf
+.pytest_cache/
