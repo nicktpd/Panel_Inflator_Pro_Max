@@ -326,21 +326,28 @@ def extrude_with_roundover(
     ]
     poly = sg.Polygon(rings[0], rings[1:])
 
+    # Several wall rings between bottom and top: the pillow stage bows
+    # the side walls outward (belly) and barrels them with the crown,
+    # which needs mid-height vertices to act on. ~6 mm vertical spacing.
+    nz = max(3, int(math.ceil(thickness / 6.0)) + 1)
+    zs = np.linspace(0.0, thickness, nz)
+
     verts: list[np.ndarray] = []
     faces: list[np.ndarray] = []
     for ring in rings:
         start = sum(len(v) for v in verts)
         n = len(ring)
-        verts.append(np.column_stack([ring, np.zeros(n)]))
-        verts.append(np.column_stack([ring, np.full(n, thickness)]))
+        for z in zs:
+            verts.append(np.column_stack([ring, np.full(n, z)]))
         idx = np.arange(n)
         nxt = (idx + 1) % n
-        a0, a1 = start + idx, start + nxt
-        b0, b1 = start + n + idx, start + n + nxt
-        # Material is left of travel, so outward is right: this winding
-        # gives outward-facing wall normals for both shells and holes.
-        faces.append(np.column_stack([a0, a1, b1]))
-        faces.append(np.column_stack([a0, b1, b0]))
+        for k in range(nz - 1):
+            a0, a1 = start + k * n + idx, start + k * n + nxt
+            b0, b1 = start + (k + 1) * n + idx, start + (k + 1) * n + nxt
+            # Material is left of travel, so outward is right: this winding
+            # gives outward-facing wall normals for both shells and holes.
+            faces.append(np.column_stack([a0, a1, b1]))
+            faces.append(np.column_stack([a0, b1, b0]))
 
     v2d, f2d = _delaunay_cap(rings, poly)
     base = sum(len(v) for v in verts)
@@ -469,6 +476,50 @@ def outline_preview(path: str, scale: float = 1.0) -> list[dict]:
     return out
 
 
+def _convex_corners(poly: sg.Polygon, min_turn_deg: float = 35.0) -> list[list[float]]:
+    """Convex outline corners as [x, y, bisector_x, bisector_y, turn_deg].
+
+    Real vinyl forms a fold dart at every convex corner (see the corner
+    photos in reference/NOTES.md); the pillow stage carves those darts
+    along the inward bisector recorded here. Uses the simplified outline
+    (before densification would drown corners in collinear points):
+    consecutive near-collinear vertices are skipped via a coarse
+    resimplification, and only convex turns count -- concave corners
+    don't fold, the fabric bridges them.
+    """
+    out: list[list[float]] = []
+    ext = orient(poly, sign=1.0).exterior.simplify(1.0)
+    pts = np.array(ext.coords[:-1], dtype=np.float64)
+    n = len(pts)
+    if n < 3:
+        return out
+    for i in range(n):
+        p = pts[i]
+        v1 = p - pts[(i - 1) % n]
+        v2 = pts[(i + 1) % n] - p
+        l1, l2 = np.linalg.norm(v1), np.linalg.norm(v2)
+        if l1 < 1e-6 or l2 < 1e-6:
+            continue
+        v1 /= l1
+        v2 /= l2
+        cross = v1[0] * v2[1] - v1[1] * v2[0]
+        dot = float(np.clip(v1 @ v2, -1.0, 1.0))
+        turn = math.degrees(math.atan2(cross, dot))
+        if turn < min_turn_deg:  # concave (negative) or too gentle
+            continue
+        # Inward bisector: mean of the two left normals (material is left
+        # of travel on a CCW exterior).
+        n1 = np.array([-v1[1], v1[0]])
+        n2 = np.array([-v2[1], v2[0]])
+        bis = n1 + n2
+        bn = np.linalg.norm(bis)
+        if bn < 1e-9:
+            continue
+        bis /= bn
+        out.append([float(p[0]), float(p[1]), float(bis[0]), float(bis[1]), float(turn)])
+    return out
+
+
 def load_2d_as_parts(
     path: str,
     scale: float = 1.0,
@@ -488,19 +539,33 @@ def load_2d_as_parts(
     miny = min(p.bounds[1] for p in polys)
 
     part_arrays = []
+    corners_per_part = []
     for poly in polys:
         from shapely.affinity import translate
 
         poly = translate(poly, xoff=-minx, yoff=-miny)
         v, f = extrude_with_roundover(poly, thickness, roundover)
         part_arrays.append((v, f))
+        corners_per_part.append(_convex_corners(poly))
 
     parts = import_stl.describe_parts_from_arrays(
         part_arrays, hardware_threshold=0, name_hints=hints
     )
     # The roundover is applied by the pillow stage as a continuous
-    # edge-roll height field; record the radius on every pillowable part.
+    # edge-roll height field; record the radius (and the fold-dart
+    # corners) on every pillowable part. Parts were sorted by face count,
+    # so match corners back to parts by vertex identity via bbox.
+    by_key = {
+        (round(v[:, 0].min(), 3), round(v[:, 1].min(), 3), len(f)): c
+        for (v, f), c in zip(part_arrays, corners_per_part)
+    }
     for part in parts:
         if part["classification"] == "pillow":
             part["edge_roll"] = float(roundover)
+            key = (
+                round(float(part["bbox_min"][0]), 3),
+                round(float(part["bbox_min"][1]), 3),
+                part["face_count"],
+            )
+            part["corners"] = by_key.get(key, [])
     return parts

@@ -308,6 +308,7 @@ def _do_import(job_id: str, project_id: str, filename: str, options_2d: Import2D
                 bbox_min=raw["bbox_min"],
                 bbox_max=raw["bbox_max"],
                 edge_roll=raw.get("edge_roll", 0.0),
+                corners=raw.get("corners", []),
             )
         )
         preview.save_part_source(cache, i, raw["vertices"], raw["faces"])
@@ -473,17 +474,17 @@ def _assemble(
     """Compute (cached) pillowed geometry for every part of a project."""
     cache = _ensure_part_sources(project)
     named: list[tuple[str, np.ndarray, np.ndarray]] = []
-    n = max(len(project.parts), 1)
+    n_parts = max(len(project.parts), 1)
     for k, info in enumerate(project.parts):
         pv, pf = preview.load_part_source(cache, info.id)
         if info.classification == "pillow":
             _job_update(
                 job_id,
-                progress_lo + (progress_hi - progress_lo) * k / n,
+                progress_lo + (progress_hi - progress_lo) * k / n_parts,
                 f"pillowing {info.name}",
             )
             mask = _load_mask(project, info)
-            v, f = preview.compute_part_cached(
+            v, f, nrm = preview.compute_part_cached(
                 cache,
                 info.id,
                 pv,
@@ -493,10 +494,11 @@ def _assemble(
                 grid_step,
                 mask=mask,
                 mask_version=info.mask_version,
+                corners=info.corners,
             )
         else:
-            v, f = pv, pf
-        named.append((f"part_{info.id}", v, f))
+            v, f, nrm = pv, pf, None
+        named.append((f"part_{info.id}", v, f, nrm))
     return named
 
 
@@ -527,7 +529,7 @@ def _do_export(job_id: str, project_id: str, fmt: str, res: float):
     safe_name = "".join(c if c.isalnum() or c in "-_" else "_" for c in project.name) or "export"
     fname = f"{safe_name}-pillowed-{stamp}.{fmt}"
     if fmt == "stl":
-        data = preview.build_stl([(v, f) for _, v, f in named])
+        data = preview.build_stl([(e[1], e[2]) for e in named])
     else:
         data = preview.build_glb(named)
     (cache / fname).write_bytes(data)

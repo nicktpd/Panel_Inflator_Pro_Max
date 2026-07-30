@@ -60,14 +60,19 @@ class PartInfo(BaseModel):
     # Wrapped-edge roll radius (mm) for parts whose source geometry has
     # sharp top edges (2D imports). 0 for STL parts with real fillets.
     edge_roll: float = 0.0
+    # Convex outline corners [x, y, bisector_x, bisector_y, turn_deg]
+    # where the vinyl gathers into a fold dart (2D imports).
+    corners: list[list[float]] = []
 
 
 class Import2DOptions(BaseModel):
     """Options the user confirms when importing an SVG/DXF outline."""
 
     scale: float = Field(default=1.0, gt=0.0)  # source unit -> mm multiplier
-    thickness: float = Field(default=50.8, gt=0.0)  # rigid core, mm (2")
-    roundover: float = Field(default=8.0, ge=0.0)  # top edge fillet, mm
+    # Calibrated against the panel-A 36x12 reference photos (see
+    # reference/NOTES.md): visible edge ~1", soft 0.5" wrapped roll.
+    thickness: float = Field(default=38.1, gt=0.0)  # core edge height, mm (1.5")
+    roundover: float = Field(default=12.7, ge=0.0)  # wrapped-edge roll, mm (0.5")
 
 
 class Project(BaseModel):

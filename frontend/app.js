@@ -18,6 +18,7 @@ const state = {
 };
 
 const viewer = new Viewer($('canvas3d'));
+window.pipmViewer = viewer; // console/debug access (e.g. exact camera angles)
 const brush = initBrush(viewer, {
   api,
   getProject: () => state.project,
@@ -152,7 +153,7 @@ function ask2DOptions(previewPromise) {
       // Dialog inputs are in inches; the engine works in mm.
       resolve({
         scale: currentScale(),
-        thickness: (parseFloat($('d2-thickness').value) || 2) * MM_PER_INCH,
+        thickness: (parseFloat($('d2-thickness').value) || 1.5) * MM_PER_INCH,
         roundover: (parseFloat($('d2-roundover').value) || 0) * MM_PER_INCH,
       });
     };

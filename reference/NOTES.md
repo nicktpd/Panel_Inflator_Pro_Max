@@ -1,5 +1,31 @@
 # Reference photo findings → default parameters
 
+## Panel A 36×12 calibration set (fourth photo batch, 2026-07-30)
+
+Five angles of the best-selling 36×12 panel — the calibration reference
+for the 2D-import defaults. Measured/observed → encoded:
+
+- Visible vertical edge ≈ 0.8–1″, then one continuous soft arc: defaults
+  changed to **thickness 1.5″ / edge roll 0.5″** (was 2″/0.3″).
+- No hard line anywhere from wall → roll → dome: the roll fades the
+  crown in across its zone (smoothstep), the arc is curvature-blurred
+  (~roll/3), and the crown knee uses the C1 smooth clamp.
+- Side walls bow outward (never flat): `belly = 0.34·roll·sin(pi·t)`
+  applied along the outward normal, zero at the base outline and at the
+  welded top seam.
+- Corner folds: convex outline corners (recorded at import) each carve a
+  shallow diagonal dart along the inward bisector, scaled by roll radius
+  and turn angle.
+- Shading: the top field exports ANALYTIC vertex normals (from the
+  height-field gradient) — averaged mesh normals showed streaks/beads on
+  the glossy roll at grazing angles. The footprint raster also gets an
+  opening pass (speckle-free boundary) and a wider margin (a 1-cell
+  margin let binary_closing eat ~4 mm off every min-side edge — a bug
+  inherited from the reference algorithm).
+
+Still pending from the user: a straight-on edge photo with a tape
+measure to confirm the 1.5″/0.5″ defaults against real dimensions.
+
 Drop photos of real upholstered panels in this folder. The engine defaults
 below were checked against five photos of a production teardrop petal
 (black vinyl over a ~2" core, shared in chat 2026-07-30 — please copy the

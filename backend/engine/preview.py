@@ -68,18 +68,25 @@ def compute_part_cached(
     grid_step: float,
     mask: np.ndarray | None = None,
     mask_version: int = 0,
-) -> tuple[np.ndarray, np.ndarray]:
-    """Pillow one part, memoized on disk per (params, res, mask) hash."""
+    corners: list[list[float]] | None = None,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray | None]:
+    """Pillow one part, memoized on disk per (params, res, mask) hash.
+
+    Returns (v, f, normals) where normals are the engine's analytic
+    top-field vertex normals (None on old cache entries). corners is
+    derived from the part's immutable source outline, so it doesn't need
+    to be part of the cache key.
+    """
     key = params_key(params, res, grid_step, mask_version)
     cpath = cache_dir / f"part{part_id}_{key}.npz"
     if cpath.exists():
         try:
             with np.load(cpath) as z:
-                return z["v"], z["f"]
+                return z["v"], z["f"], (z["n"] if "n" in z.files else None)
         except Exception:
             cpath.unlink(missing_ok=True)  # corrupt cache: recompute
 
-    v, f = pillow.pillow_panel(
+    v, f, n = pillow.pillow_panel(
         pv,
         pf,
         crown=params["crown"],
@@ -89,17 +96,20 @@ def compute_part_cached(
         w_exp=params.get("w_exp", 1.5),
         tension=params.get("tension", 0.7),
         edge_roll=params.get("edge_roll", 0.0),
+        corners=corners,
         res=res,
         grid_step=grid_step,
         mask=mask,
+        return_normals=True,
     )
     v = v.astype(np.float32)
     f = f.astype(np.int32)
+    n = n.astype(np.float32)
     cache_dir.mkdir(parents=True, exist_ok=True)
     tmp = cpath.with_suffix(".tmp.npz")
-    np.savez_compressed(tmp, v=v, f=f)
+    np.savez_compressed(tmp, v=v, f=f, n=n)
     tmp.replace(cpath)
-    return v, f
+    return v, f, n
 
 
 def prune_part_cache(cache_dir: Path, keep_per_part: int = 4) -> None:

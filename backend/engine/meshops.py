@@ -23,6 +23,14 @@ from scipy import ndimage
 # Vertices within this distance of zmax count as "on the flat top".
 TOP_TOL = 1e-3
 
+# Empty border cells around the footprint raster, each side. Must exceed
+# the binary_closing iteration count (3): scipy's closing pads with zeros,
+# so erosion EATS any occupied cells within `iterations` of the array
+# edge. The original reference used a 1-cell margin, which silently
+# shaved ~2 cells (4 mm at export res) off the min-x/min-y edges of every
+# panel and zeroed the distance gradient there.
+MARGIN = 4
+
 
 class FootprintRaster:
     """A boolean occupancy grid of a panel footprint plus its transform.
@@ -43,8 +51,8 @@ class FootprintRaster:
         return ndimage.map_coordinates(
             field,
             [
-                (pts_xy[:, 1] - self.ymin) / self.res + 1,
-                (pts_xy[:, 0] - self.xmin) / self.res + 1,
+                (pts_xy[:, 1] - self.ymin) / self.res + MARGIN,
+                (pts_xy[:, 0] - self.xmin) / self.res + MARGIN,
             ],
             order=1,
         )
@@ -104,8 +112,8 @@ def rasterize_footprint(
     zmax = float(pv[:, 2].max())
     xmin = float(pv[:, 0].min())
     ymin = float(pv[:, 1].min())
-    nx = int(np.ceil((pv[:, 0].max() - xmin) / res)) + 3
-    ny = int(np.ceil((pv[:, 1].max() - ymin) / res)) + 3
+    nx = int(np.ceil((pv[:, 0].max() - xmin) / res)) + 2 * MARGIN
+    ny = int(np.ceil((pv[:, 1].max() - ymin) / res)) + 2 * MARGIN
 
     vtop = top_vertex_mask(pv, zmax)
     ftop = pf[vtop[pf].all(axis=1)]  # flat-top triangles
@@ -127,10 +135,17 @@ def rasterize_footprint(
 
     grid = np.zeros((ny, nx), dtype=bool)
     grid[
-        np.clip(((allp[:, 1] - ymin) / res).astype(int) + 1, 0, ny - 1),
-        np.clip(((allp[:, 0] - xmin) / res).astype(int) + 1, 0, nx - 1),
+        np.clip(((allp[:, 1] - ymin) / res).astype(int) + MARGIN, 0, ny - 1),
+        np.clip(((allp[:, 0] - xmin) / res).astype(int) + MARGIN, 0, nx - 1),
     ] = True
     grid = ndimage.binary_closing(grid, np.ones((3, 3)), iterations=3)
+    grid = fill_small_holes(grid, res)
+    # Shave single-cell boundary raggedness left by the random sampling:
+    # the EDT amplifies a ragged edge into periodic ridges that ripple
+    # through every derived field (visible as beads along the edge roll).
+    # One opening pass removes 1-cell protrusions; the closing above has
+    # already guaranteed there are no 1-cell bays to widen.
+    grid = ndimage.binary_opening(grid, np.ones((3, 3)), iterations=1)
     grid = fill_small_holes(grid, res)
     return FootprintRaster(grid, xmin, ymin, res)
 
@@ -190,7 +205,7 @@ def crown_profile(dist: np.ndarray, crown: float, dref: float, exp: float) -> np
     return crown * _smooth_clamp(p)
 
 
-def edge_roll_drop(dist_raw: np.ndarray, roll: float) -> np.ndarray:
+def edge_roll_drop(dist_raw: np.ndarray, roll: float, res: float = 0.0) -> np.ndarray:
     """Height drop (<= 0) of the wrapped-edge roll, vs distance to edge.
 
     Models the vinyl rolling over the arris of the core as a quarter
@@ -203,9 +218,12 @@ def edge_roll_drop(dist_raw: np.ndarray, roll: float) -> np.ndarray:
     a corner, like the photographed folds).
 
     Uses the RAW distance so the roll radius is faithful; the caller may
-    blur the result a touch to hide raster stair-steps.
+    blur the result a touch to hide raster stair-steps. ``res`` shifts
+    the curve one cell outward: boundary-adjacent cells read ~res from
+    the EDT even though the outline itself is at distance 0, and without
+    the shift the rim would only drop a fraction of the roll.
     """
-    d = np.clip(dist_raw, 0.0, roll)
+    d = np.clip(dist_raw - res, 0.0, roll)
     return np.sqrt(np.maximum(roll * roll - (roll - d) ** 2, 0.0)) - roll
 
 
@@ -316,6 +334,26 @@ def ensure_up_normals(pts2d: np.ndarray, faces: np.ndarray) -> np.ndarray:
     return flipped
 
 
+def topology_vertex_normals(v: np.ndarray, f: np.ndarray) -> np.ndarray:
+    """Area-weighted average vertex normals (plain, fast, no trimesh)."""
+    e1 = v[f[:, 1]] - v[f[:, 0]]
+    e2 = v[f[:, 2]] - v[f[:, 0]]
+    fn = np.cross(e1, e2)  # length ~ 2*area: built-in area weighting
+    out = np.zeros_like(v)
+    for k in range(3):
+        np.add.at(out, f[:, k], fn)
+    norm = np.linalg.norm(out, axis=1, keepdims=True)
+    return np.divide(out, norm, out=np.zeros_like(out), where=norm > 1e-12)
+
+
+def compact_with_normals(
+    v: np.ndarray, f: np.ndarray, n: np.ndarray
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """compact() that carries a per-vertex normal array along."""
+    used, inv = np.unique(f, return_inverse=True)
+    return v[used], inv.reshape(f.shape).astype(f.dtype), n[used]
+
+
 def compact(v: np.ndarray, f: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     """Drop vertices not referenced by any face, reindexing faces.
 
@@ -348,17 +386,25 @@ def export_stl_bytes(v: np.ndarray, f: np.ndarray) -> bytes:
     return to_trimesh(v, f).export(file_type="stl")
 
 
-def export_glb_bytes(named_parts: list[tuple[str, np.ndarray, np.ndarray]]) -> bytes:
+def export_glb_bytes(named_parts: list[tuple]) -> bytes:
     """GLB scene with one named node per part.
 
     Node/geometry names survive into Three.js' GLTFLoader, which is how the
-    frontend maps a clicked mesh back to a part id for selection.
+    frontend maps a clicked mesh back to a part id for selection. Entries
+    are (name, v, f) or (name, v, f, normals); explicit normals (the
+    engine's analytic top-field normals) take precedence over trimesh's
+    averaged ones.
     """
     scene = trimesh.Scene()
-    for name, v, f in named_parts:
+    for entry in named_parts:
+        name, v, f = entry[0], entry[1], entry[2]
+        normals = entry[3] if len(entry) > 3 else None
         mesh = to_trimesh(v.astype(np.float32), f)
-        # Force smooth vertex normals so the crown curvature reads well.
-        mesh.vertex_normals  # noqa: B018  (property access computes+caches)
+        if normals is not None:
+            mesh.vertex_normals = normals.astype(np.float32)
+        else:
+            # Force smooth vertex normals so curvature reads well.
+            mesh.vertex_normals  # noqa: B018  (property access computes+caches)
         scene.add_geometry(mesh, node_name=name, geom_name=name)
     data = scene.export(file_type="glb")
     if isinstance(data, str):
