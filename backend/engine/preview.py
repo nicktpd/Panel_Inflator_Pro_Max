@@ -25,11 +25,17 @@ PREVIEW_GRID = 10.0
 EXPORT_RES = 2.0
 EXPORT_GRID = 6.0
 
+# Bump whenever the pillow engine's OUTPUT changes for identical inputs
+# (algorithm fixes, not parameter changes), so stale caches from older
+# engine versions are never served. 2 = exact-distance-field rework.
+ENGINE_VERSION = 2
+
 
 def params_key(params: dict, res: float, grid_step: float, mask_version: int) -> str:
     """Stable short hash identifying one pillow computation."""
     blob = json.dumps(
-        {"p": params, "res": res, "grid": grid_step, "mask": mask_version},
+        {"p": params, "res": res, "grid": grid_step, "mask": mask_version,
+         "engine": ENGINE_VERSION},
         sort_keys=True,
     )
     return hashlib.sha1(blob.encode()).hexdigest()[:16]
