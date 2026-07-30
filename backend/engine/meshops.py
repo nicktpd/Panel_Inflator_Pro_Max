@@ -135,19 +135,23 @@ def rasterize_footprint(
     return FootprintRaster(grid, xmin, ymin, res)
 
 
-def distance_field(fp: FootprintRaster, sigma: float) -> np.ndarray:
-    """Smoothed interior distance-to-boundary in mm.
+def distance_field(fp: FootprintRaster, sigma: float) -> tuple[np.ndarray, np.ndarray]:
+    """Interior distance-to-boundary in mm: (raw, smoothed).
 
-    Euclidean distance transform of the occupancy grid (cells to nearest
-    empty cell) scaled to mm, then gaussian smoothed so the crown profile
-    has no faceting from the raster. sigma is in grid cells, so preview
-    (4 mm cells) and export (2 mm cells) smooth by the same *relative*
-    amount the reference algorithm validated.
+    Euclidean distance transform of the occupancy grid scaled to mm; the
+    smoothed copy (gaussian, sigma in grid cells so preview and export
+    smooth by the same *relative* amount) drives the crown profile so it
+    has no faceting from the raster.
+
+    The RAW field must be used for geometric decisions (triangle culling,
+    interior-grid inset): it is exactly 0 outside the footprint and inside
+    cutouts. The smoothed field bleeds positive values ~sigma cells past
+    the boundary, which at coarse preview resolution is enough to wrongly
+    keep triangles spanning a real hole.
     """
-    dist = ndimage.distance_transform_edt(fp.grid) * fp.res
-    if sigma > 0:
-        dist = ndimage.gaussian_filter(dist, sigma=sigma)
-    return dist
+    raw = ndimage.distance_transform_edt(fp.grid) * fp.res
+    smooth = ndimage.gaussian_filter(raw, sigma=sigma) if sigma > 0 else raw
+    return raw, smooth
 
 
 def crown_profile(dist: np.ndarray, crown: float, dref: float, exp: float) -> np.ndarray:

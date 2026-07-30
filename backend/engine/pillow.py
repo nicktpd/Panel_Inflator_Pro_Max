@@ -93,9 +93,11 @@ def pillow_panel(
         # No flat-top faces at all: nothing we can pillow safely.
         return pv, pf.copy()
 
-    # --- footprint raster + smoothed interior distance + crown profile ---
+    # --- footprint raster + interior distance + crown profile ---
+    # dist_raw: geometry truth (0 in holes/outside) for culling + inset.
+    # dist: smoothed, drives the crown profile shape.
     fp = meshops.rasterize_footprint(pv, pf, res, rng)
-    dist = meshops.distance_field(fp, sigma)
+    dist_raw, dist = meshops.distance_field(fp, sigma)
     prof = meshops.crown_profile(dist, crown, dref, exp)
 
     if mask is not None and mask.size:
@@ -117,14 +119,14 @@ def pillow_panel(
         np.arange(fp.ymin, pv[:, 1].max(), grid_step),
     )
     gp = np.column_stack([gx.ravel(), gy.ravel()])
-    gp = gp[fp.sample(dist, gp) > inset]
+    gp = gp[fp.sample(dist_raw, gp) > inset]
 
     pts2d = np.vstack([ring_xy, gp])
     if len(pts2d) < 3:
         return pv, pf.copy()
     tri = Delaunay(pts2d)
     cent = pts2d[tri.simplices].mean(axis=1)
-    new_f = tri.simplices[fp.sample(dist, cent) > CULL_DIST]
+    new_f = tri.simplices[fp.sample(dist_raw, cent) > CULL_DIST]
     # Delaunay orientation is not guaranteed; make the new top face up.
     new_f = meshops.ensure_up_normals(pts2d, new_f)
     newz = zmax + fp.sample(prof, pts2d)
