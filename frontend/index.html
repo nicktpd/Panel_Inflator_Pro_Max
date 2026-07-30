@@ -17,6 +17,7 @@
 <body>
 <header id="topbar">
   <div id="logo">PANEL&nbsp;INFLATOR&nbsp;<span>PRO&nbsp;MAX</span></div>
+  <div id="build-badge" title="Running build — click to check for updates">build …</div>
   <div id="project-name" title="Current project">no project</div>
   <div class="spacer"></div>
 
@@ -28,7 +29,7 @@
   <div class="sep"></div>
 
   <div class="toggle-group" id="units-toggle" title="Display units (data stays mm)">
-    <button data-u="mm" class="on">mm</button><button data-u="inch">in</button>
+    <button data-u="mm">mm</button><button data-u="inch" class="on">in</button>
   </div>
 
   <div class="sep"></div>
@@ -111,8 +112,8 @@
 
     <label>Units in file
       <select id="d2-units">
+        <option value="25.4" selected>inches (× 25.4)</option>
         <option value="1.0">millimetres (1:1)</option>
-        <option value="25.4">inches (× 25.4)</option>
         <option value="10.0">centimetres (× 10)</option>
         <option value="0.26458333">SVG px at 96 dpi (× 0.2646)</option>
         <option value="custom">custom scale…</option>
@@ -121,12 +122,12 @@
     <label id="d2-custom-wrap" hidden>Custom scale (unit → mm)
       <input type="number" id="d2-custom" value="1.0" step="any" min="0.0001">
     </label>
-    <label>Base thickness (mm)
-      <input type="number" id="d2-thickness" value="50.8" step="0.1" min="1">
-      <small>rigid core before pillowing (50.8 = 2″)</small>
+    <label>Base thickness (in)
+      <input type="number" id="d2-thickness" value="2" step="0.125" min="0.05">
+      <small>rigid core before pillowing (2″ = 50.8 mm)</small>
     </label>
-    <label>Edge roundover (mm)
-      <input type="number" id="d2-roundover" value="8" step="0.5" min="0">
+    <label>Edge roundover (in)
+      <input type="number" id="d2-roundover" value="0.3" step="0.05" min="0">
       <small>fillet on the top perimeter edge</small>
     </label>
     <menu>

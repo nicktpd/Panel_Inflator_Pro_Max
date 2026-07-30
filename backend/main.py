@@ -117,6 +117,49 @@ def _run_job(kind: str, fn) -> str:
     return job_id
 
 
+_VERSION_CACHE: dict | None = None
+
+
+def _git(args: list[str]) -> str | None:
+    import subprocess
+
+    try:
+        out = subprocess.run(
+            ["git", *args], cwd=ROOT, capture_output=True, text=True, timeout=5
+        )
+        return out.stdout.strip() if out.returncode == 0 else None
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
+@app.get("/api/version")
+def get_version():
+    """Report the running build so the user can confirm they're current.
+
+    Reads the checked-out git commit (short hash, date, subject). A ZIP
+    install with no git returns install='zip' and hash='unknown', which is
+    itself the answer to 'why isn't my app updating' — ZIP installs can't
+    self-update. Cached after the first call; commit only changes on a
+    pull, which restarts the server anyway.
+    """
+    global _VERSION_CACHE
+    if _VERSION_CACHE is not None:
+        return _VERSION_CACHE
+    is_git = (ROOT / ".git").exists() and _git(["rev-parse", "HEAD"]) is not None
+    if is_git:
+        info = {
+            "install": "git",
+            "hash": _git(["rev-parse", "--short", "HEAD"]) or "unknown",
+            "date": _git(["log", "-1", "--format=%cd", "--date=short"]) or "",
+            "subject": _git(["log", "-1", "--format=%s"]) or "",
+            "branch": _git(["rev-parse", "--abbrev-ref", "HEAD"]) or "",
+        }
+    else:
+        info = {"install": "zip", "hash": "unknown", "date": "", "subject": "", "branch": ""}
+    _VERSION_CACHE = info
+    return info
+
+
 @app.get("/api/jobs/{job_id}")
 def get_job(job_id: str):
     with _jobs_lock:

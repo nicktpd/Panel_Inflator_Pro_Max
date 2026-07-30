@@ -34,6 +34,14 @@ html, body {
 }
 #logo { font-weight: 700; letter-spacing: 1px; font-size: 13px; }
 #logo span { color: var(--accent); }
+#build-badge {
+  margin-left: 12px; padding: 2px 8px; border-radius: 10px;
+  background: var(--bg-input); border: 1px solid var(--border);
+  color: var(--text-dim); font-size: 10px; font-variant-numeric: tabular-nums;
+  cursor: pointer; white-space: nowrap;
+}
+#build-badge:hover { border-color: var(--accent); color: var(--text); }
+#build-badge.zip { border-color: var(--err); color: var(--err); }
 #project-name {
   margin-left: 14px; color: var(--text-dim);
   max-width: 26ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;

@@ -67,7 +67,7 @@ class Project(BaseModel):
     created: str
     source_file: str  # filename inside the project directory
     source_type: Literal["stl", "2d"]
-    units_display: Literal["mm", "inch"] = "mm"  # display only, data is mm
+    units_display: Literal["mm", "inch"] = "inch"  # display only, data is mm
     global_params: PillowParams = PillowParams()
     import_2d: Optional[Import2DOptions] = None
     parts: list[PartInfo] = []

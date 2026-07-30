@@ -31,9 +31,19 @@ automatically. Drag an STL (or SVG/DXF outline) into the window.
 ## Staying up to date
 
 Install via `git clone` (not ZIP) and updates are automatic: every
-launch, `run.bat` / `run.sh` quietly does a fast-forward pull from
-GitHub and reinstalls dependencies only if they changed. Offline or
-ZIP installs simply skip the check and start normally.
+launch, `run.bat` / `run.sh` prints an update banner, does a
+fast-forward pull from GitHub, and reinstalls dependencies only if they
+changed. Offline or ZIP installs say so and start normally.
+
+**Which version am I running?** The top bar shows a build badge like
+`build 95dbd1a · 2026-07-30`. Click it to open the GitHub commit list
+and compare. A ZIP install shows a red `ZIP build (no auto-update)`
+badge instead — that's the usual reason an app "won't update".
+
+**First update after installing an older copy:** if your app predates
+the auto-update feature, its `run.bat` doesn't know to pull yet. Do a
+one-time `git pull` in the project folder (or run `update.bat`); every
+launch after that updates on its own.
 
 - Force an update / see errors: `update.bat` (or `./update.sh`).
 - Launch without checking: set the environment variable `PIPM_NO_UPDATE=1`.

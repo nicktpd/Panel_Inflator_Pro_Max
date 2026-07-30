@@ -7,10 +7,12 @@ import { initBrush } from './brush.js';
 
 const $ = (id) => document.getElementById(id);
 
+const MM_PER_INCH = 25.4;
+
 const state = {
   project: null,
   selectedPartId: null,
-  units: 'mm',
+  units: 'inch',
   previewJobRunning: false,
   previewDirty: false,
 };
@@ -147,10 +149,11 @@ function ask2DOptions(previewPromise) {
   return new Promise((resolve) => {
     dlg.onclose = () => {
       if (dlg.returnValue !== 'ok') return resolve(null);
+      // Dialog inputs are in inches; the engine works in mm.
       resolve({
         scale: currentScale(),
-        thickness: parseFloat($('d2-thickness').value) || 50.8,
-        roundover: parseFloat($('d2-roundover').value) || 0,
+        thickness: (parseFloat($('d2-thickness').value) || 2) * MM_PER_INCH,
+        roundover: (parseFloat($('d2-roundover').value) || 0) * MM_PER_INCH,
       });
     };
     dlg.showModal();
@@ -620,5 +623,34 @@ window.addEventListener('keydown', (e) => {
   if (e.key === 'b' || e.key === 'B') toggleBeforeAfter();
   if (e.key === 'Escape') selectPart(null);
 });
+
+// ---------------------------------------------------------------------------
+// build/version badge — lets the user confirm their copy is up to date
+// ---------------------------------------------------------------------------
+
+(async function showBuild() {
+  const badge = $('build-badge');
+  try {
+    const v = await api('/api/version');
+    if (v.install === 'zip') {
+      badge.textContent = 'ZIP build (no auto-update)';
+      badge.classList.add('zip');
+      badge.title = 'This copy was installed from a ZIP, so it cannot self-update. '
+        + 'Re-download the latest ZIP, or install with git clone for automatic updates.';
+    } else {
+      badge.textContent = `build ${v.hash} · ${v.date}`;
+      badge.title = `${v.subject}\n(${v.branch} @ ${v.hash}, ${v.date})\n`
+        + 'Click to check GitHub for a newer version.';
+    }
+    badge.dataset.hash = v.hash;
+    badge.onclick = () => {
+      // Point the user at the latest commit list so they can compare.
+      window.open('https://github.com/nicktpd/Panel_Inflator_Pro_Max/commits/main', '_blank');
+    };
+    console.log('[Panel Inflator] running build:', v);
+  } catch {
+    badge.textContent = 'build ?';
+  }
+})();
 
 setStatus('ready — drop a file to begin');
