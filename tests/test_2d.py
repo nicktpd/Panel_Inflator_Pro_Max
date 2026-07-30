@@ -10,6 +10,7 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+import shapely.geometry as sg
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -168,6 +169,27 @@ def test_outline_preview_dxf_names_and_scale():
     assert len(preview) == 1
     assert preview[0]["name"] == "Panel J"
     assert preview[0]["width"] == pytest.approx(52 * 25.4, abs=1.0)
+
+
+def test_tension_suppresses_irregular_but_not_rectangles():
+    """Membrane tension lowers the crown on a rounded shape, and leaves
+    a straight rectangle (a strip, where membrane == distance) unchanged."""
+    # Rectangle: tension must not change the max crown.
+    rect = sg.box(0, 0, 600, 160)
+    rv, rf = import_2d.extrude_with_roundover(rect, 50.8, 8.0)
+    v0, _ = pillow.pillow_panel(rv, rf, res=4.0, grid_step=10.0, tension=0.0)
+    v1, _ = pillow.pillow_panel(rv, rf, res=4.0, grid_step=10.0, tension=1.0)
+    assert abs((v1[:, 2].max()) - (v0[:, 2].max())) < 1.5, "rectangle crown moved"
+
+    # Disk: constrained from every side, so the membrane lofts its centre
+    # less than a strip of the same half-width would -- tension must pull
+    # the peak down, and can only ever lower it.
+    disk = sg.Point(100, 100).buffer(90, resolution=64)
+    dv, df = import_2d.extrude_with_roundover(disk, 50.8, 8.0)
+    d0, _ = pillow.pillow_panel(dv, df, res=4.0, grid_step=10.0, tension=0.0)
+    d1, _ = pillow.pillow_panel(dv, df, res=4.0, grid_step=10.0, tension=1.0)
+    assert d1[:, 2].max() <= d0[:, 2].max() + 1e-6, "tension raised the crown"
+    assert d1[:, 2].max() < d0[:, 2].max() - 0.5, "tension had no effect on the disk"
 
 
 def test_two_disjoint_outlines_two_parts():

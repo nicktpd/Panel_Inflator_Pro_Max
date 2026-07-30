@@ -164,6 +164,101 @@ def crown_profile(dist: np.ndarray, crown: float, dref: float, exp: float) -> np
     return crown * np.power(np.clip(dist / dref, 0.0, 1.0), exp)
 
 
+def membrane_tension(fp: "FootprintRaster", target_cells: int = 160) -> np.ndarray:
+    """Tension-suppression factor in [0, 1] from an inflated-membrane solve.
+
+    The nearest-edge distance transform only knows the *closest* wall, so
+    it can't tell a point squeezed between two converging edges (a
+    tapering tail) from a point the same distance inside a broad panel.
+    Real stretched vinyl is a membrane pinned at every edge: where the
+    fabric is constrained from several sides it can't loft as high --
+    that's the extra tension a narrowing region feels.
+
+    We solve the small-deflection inflated-membrane equation grad^2 h = -1
+    with h = 0 on every edge (and inside holes), on a coarsened copy of
+    the footprint (the field is smooth and low-frequency, so a <=160-cell
+    grid is plenty and keeps cost O(1) regardless of panel size/res).
+    The membrane's effective half-width is d_mem = sqrt(2 h); for an
+    infinite strip d_mem equals the nearest-edge distance exactly, so
+    straight rectangles are unchanged. Where the shape tapers or pinches,
+    d_mem < distance, and
+
+        tension = clip(d_mem / distance, 0, 1)
+
+    is < 1 -- the amount to pull the crown down. It is clipped at 1 so the
+    factor can only *suppress* (never inflate) relative to the validated
+    distance-field crown, which keeps every calibrated straight-panel case
+    identical and only adds realism to irregular outlines.
+    """
+    from scipy import ndimage
+    from scipy import sparse
+    from scipy.sparse.linalg import spsolve
+
+    grid = fp.grid
+    ny, nx = grid.shape
+
+    # Coarsen so the linear solve is bounded regardless of raster size.
+    factor = max(1, int(np.ceil(max(ny, nx) / target_cells)))
+    if factor > 1:
+        cy, cx = (ny // factor) * factor, (nx // factor) * factor
+        occ = (
+            grid[:cy, :cx]
+            .reshape(cy // factor, factor, cx // factor, factor)
+            .mean(axis=(1, 3))
+            >= 0.5
+        )
+        res_c = fp.res * factor
+    else:
+        occ = grid.copy()
+        res_c = fp.res
+
+    H, W = occ.shape
+    cells = np.argwhere(occ)
+    if len(cells) < 9:
+        return np.ones_like(grid, dtype=np.float64)
+
+    idx = -np.ones((H, W), dtype=np.int64)
+    idx[occ] = np.arange(len(cells))
+    n = len(cells)
+    ci, cj = cells[:, 0], cells[:, 1]
+    k = np.arange(n)
+
+    rows = [k]
+    colz = [k]
+    data = [np.full(n, 4.0)]
+    for di, dj in ((-1, 0), (1, 0), (0, -1), (0, 1)):
+        ni, nj = ci + di, cj + dj
+        valid = (ni >= 0) & (ni < H) & (nj >= 0) & (nj < W)
+        nn = -np.ones(n, dtype=np.int64)
+        nn[valid] = idx[ni[valid], nj[valid]]
+        has = nn >= 0
+        rows.append(k[has])
+        colz.append(nn[has])
+        data.append(np.full(int(has.sum()), -1.0))
+    a = sparse.coo_matrix(
+        (np.concatenate(data), (np.concatenate(rows), np.concatenate(colz))),
+        shape=(n, n),
+    ).tocsr()
+    h = spsolve(a, np.full(n, res_c * res_c))  # h in mm^2
+    h = np.maximum(h, 0.0)
+
+    d_mem = np.zeros((H, W))
+    d_mem[occ] = np.sqrt(2.0 * h)  # mm
+    d_dist = ndimage.distance_transform_edt(occ) * res_c
+    tau = np.where(occ, np.clip(d_mem / np.maximum(d_dist, res_c), 0.0, 1.0), 1.0)
+
+    if factor > 1:
+        tau = ndimage.zoom(tau, (ny / H, nx / W), order=1, mode="nearest")
+        tau = tau[:ny, :nx]
+        if tau.shape != grid.shape:
+            tau = np.pad(
+                tau,
+                ((0, ny - tau.shape[0]), (0, nx - tau.shape[1])),
+                mode="edge",
+            )
+    return np.where(grid, tau, 1.0)
+
+
 def ensure_up_normals(pts2d: np.ndarray, faces: np.ndarray) -> np.ndarray:
     """Flip 2D triangles to counter-clockwise so extruded normals point +z."""
     a = pts2d[faces[:, 0]]

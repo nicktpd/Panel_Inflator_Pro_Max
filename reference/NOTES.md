@@ -50,6 +50,30 @@ Observed on the real petal ⇄ encoded in the engine:
   clearcoat sheen + studio environment reflections; the grazing rim
   light mimics the raking light that makes folds visible in the photos.
 
+## Tapering / irregular panels — tension (teardrop petal photos)
+
+- On the teardrop petal the crown is tallest at the wide bulb and fades
+  toward the narrow tail: less width = less room to loft = a tenser,
+  lower crown. The nearest-edge distance field already reproduces the
+  gross effect (tail distance is small), but it can't feel a *taper* or
+  the all-sides tension of a rounded region.
+- Added an inflated-membrane solve (grad^2 h = -1, pinned at every edge;
+  `meshops.membrane_tension`). Its effective half-width equals the
+  nearest-edge distance on a straight strip, so rectangles are unchanged,
+  but on rounded/tapering shapes it is lower — the physical "tension"
+  pull. Exposed as a **Tension** parameter (default 0.7); 0 recovers the
+  original validated distance-field crown exactly.
+
+## Viewer material (shape readability)
+
+- Switched the pillow material to **black leather** (dark base + clearcoat
+  sheen + grain bump under image-based studio lighting). A dark, slightly
+  glossy surface reads curvature through the moving specular highlight far
+  better than a matte light colour — matches the black-vinyl product.
+- Smoother bulge: the crown profile is blurred past its saturation knee so
+  the shoulder has no crease, and the retriangulated top seeds collar
+  rings inside the boundary so the roll-over shades without serration.
+
 If future photos disagree (different foam, tighter wrap), tune the global
 parameters in the UI first; only change the code defaults in
 `backend/models.py::PillowParams` once a value is confirmed across several

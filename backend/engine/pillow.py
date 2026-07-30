@@ -45,6 +45,15 @@ CULL_DIST = 0.5
 # mask is multiplied in, so mask edges never crease the surface.
 MASK_BLUR_SIGMA = 1.5
 
+# Always-on light smoothing (grid cells) of the finished profile. The
+# crown formula has a slope discontinuity at its saturation knee (where
+# dist/dref reaches 1 and the surface stops rising), which reads as a
+# faint crease line around the shoulder of the bulge. A gentle blur of
+# the profile after the nonlinearity rounds that knee into a smooth
+# shoulder without moving the peak -- "upholstery has no sharp interior
+# lines" (spec section 5).
+KNEE_BLUR_SIGMA = 1.6
+
 
 def pillow_panel(
     pv: np.ndarray,
@@ -55,6 +64,7 @@ def pillow_panel(
     exp: float = 0.55,
     sigma: float = 5.0,
     w_exp: float = 1.5,
+    tension: float = 0.7,
     res: float = 2.0,
     grid_step: float = 6.0,
     mask: np.ndarray | None = None,
@@ -101,13 +111,27 @@ def pillow_panel(
     # dist: smoothed, drives the crown profile shape.
     fp = meshops.rasterize_footprint(pv, pf, res, rng)
     dist_raw, dist = meshops.distance_field(fp, sigma)
-    prof = meshops.crown_profile(dist, crown, dref, exp)
+
+    # Tension: pull the crown down where the membrane is more constrained
+    # than the nearest-edge distance implies (tapers, pinches, tips). The
+    # factor equals 1 on straight panels, so calibration is preserved.
+    d_eff = dist
+    if tension > 0.0:
+        tau = meshops.membrane_tension(fp)
+        if sigma > 0:
+            tau = ndimage.gaussian_filter(tau, sigma=max(sigma * 0.5, 1.0))
+        d_eff = dist * ((1.0 - tension) + tension * tau)
+
+    prof = meshops.crown_profile(d_eff, crown, dref, exp)
 
     mask_grid = _mask_on_raster(mask, fp)
     if mask_grid is not None:
         prof = prof * mask_grid
-        # Upholstery never creases: soften whatever the brush did.
-        prof = ndimage.gaussian_filter(prof, sigma=MASK_BLUR_SIGMA)
+
+    # Round the saturation-knee shoulder (and any brush edge) so the bulge
+    # has no crease line. Always applied; slightly stronger with a mask.
+    knee = KNEE_BLUR_SIGMA + (MASK_BLUR_SIGMA if mask_grid is not None else 0.0)
+    prof = ndimage.gaussian_filter(prof, sigma=knee)
 
     # --- delete flat top, keep sides/fillets/bottom ---
     keep = pf[~vtop[pf].all(axis=1)]
@@ -116,7 +140,16 @@ def pillow_panel(
     ring = ring[vtop[ring]]
     ring_xy = pv[ring, :2]
 
-    # --- new domed top: ring + interior grid, Delaunay, cull outside ---
+    # --- new domed top: ring + collar + interior grid, Delaunay, cull ---
+    # The boundary ring is dense (~2 mm, so the side walls stay smooth),
+    # but a coarse interior grid alone leaves long sliver triangles in the
+    # band between them -- their alternating normals read as a serrated
+    # line right where the crown rolls over the edge. Seed a couple of
+    # concentric "collar" rings just inside the boundary (spaced like the
+    # grid) so that band is filled with well-shaped triangles and the
+    # shoulder shades smoothly.
+    collar = _collar_points(ring_xy, fp, dist_raw, grid_step)
+
     inset = grid_step * GRID_INSET_FACTOR
     gx, gy = np.meshgrid(
         np.arange(fp.xmin, pv[:, 0].max(), grid_step),
@@ -125,7 +158,7 @@ def pillow_panel(
     gp = np.column_stack([gx.ravel(), gy.ravel()])
     gp = gp[fp.sample(dist_raw, gp) > inset]
 
-    pts2d = np.vstack([ring_xy, gp])
+    pts2d = np.vstack([ring_xy, collar, gp]) if len(collar) else np.vstack([ring_xy, gp])
     if len(pts2d) < 3:
         return pv, pf.copy()
     tri = Delaunay(pts2d)
@@ -151,6 +184,43 @@ def pillow_panel(
     all_v = np.vstack([pv, new_v[len(ring) :]])
     all_f = np.vstack([keep, nf])
     return meshops.compact(all_v, all_f)
+
+
+def _collar_points(
+    ring_xy: np.ndarray, fp, dist_raw: np.ndarray, grid_step: float
+) -> np.ndarray:
+    """Concentric offset rings just inside the boundary.
+
+    Moves each (dense) boundary vertex inward along the distance-field
+    gradient by fractions of the grid step, producing 1-2 collar rings
+    that fill the boundary->interior band with well-shaped triangles.
+    This removes the sliver-triangle serration where the crown rolls over
+    the edge, giving a smooth shoulder. Points that don't land safely
+    inside (sharp concavities) are dropped; Delaunay + centroid culling
+    downstream tolerate the rest.
+    """
+    if len(ring_xy) < 3:
+        return np.empty((0, 2))
+    grow, gcol = np.gradient(dist_raw)  # d(dist)/drow, d(dist)/dcol
+    vx = fp.sample(gcol, ring_xy)
+    vy = fp.sample(grow, ring_xy)
+    vec = np.column_stack([vx, vy])
+    norm = np.linalg.norm(vec, axis=1, keepdims=True)
+    vec = np.divide(vec, norm, out=np.zeros_like(vec), where=norm > 1e-6)
+
+    out = []
+    for frac in (0.4, 0.8):
+        off = grid_step * frac
+        cand = ring_xy + vec * off
+        d = fp.sample(dist_raw, cand)
+        out.append(cand[d > off * 0.5])
+    collar = np.vstack(out)
+    if not len(collar):
+        return collar
+    # Drop near-duplicates (converging offsets at tips) that upset Delaunay.
+    keys = np.round(collar / max(grid_step * 0.2, 0.5)).astype(np.int64)
+    _, uniq = np.unique(keys, axis=0, return_index=True)
+    return collar[np.sort(uniq)]
 
 
 def _mask_on_raster(mask, fp) -> np.ndarray | None:

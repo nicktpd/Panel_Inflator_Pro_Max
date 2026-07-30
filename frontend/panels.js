@@ -10,9 +10,11 @@ export const PARAM_DEFS = [
     hint: '<1 = fast rise, gentle dome' },
   { key: 'sigma', label: 'Smoothing', min: 0, max: 15, step: 0.5, unit: 'cells',
     hint: 'gaussian blur of the distance field' },
+  { key: 'tension', label: 'Tension', min: 0, max: 1, step: 0.05, unit: '',
+    hint: 'membrane pull: lowers the crown in narrow/tapering areas (0 = off, straight panels unaffected)' },
 ];
 
-export const DEFAULT_PARAMS = { crown: 32.0, dref: 110.0, exp: 0.55, sigma: 5.0, w_exp: 1.5 };
+export const DEFAULT_PARAMS = { crown: 32.0, dref: 110.0, exp: 0.55, sigma: 5.0, w_exp: 1.5, tension: 0.7 };
 
 const MM_PER_INCH = 25.4;
 

@@ -22,6 +22,11 @@ class PillowParams(BaseModel):
     sigma : gaussian smoothing of the distance field, in grid cells.
     w_exp : vertical weighting exponent for side-wall barreling; the bottom
             of a part is pinned (w=0) and the top moves fully (w=1).
+    tension : 0..1 strength of the membrane-tension suppression that lowers
+            the crown in narrow/tapering regions (0 = pure nearest-edge
+            distance, the original validated behaviour; higher = more
+            realistic pull on irregular shapes). Straight rectangles are
+            unaffected at any value.
     """
 
     crown: float = Field(default=32.0, ge=0.0, le=500.0)
@@ -29,6 +34,7 @@ class PillowParams(BaseModel):
     exp: float = Field(default=0.55, gt=0.0, le=4.0)
     sigma: float = Field(default=5.0, ge=0.0, le=50.0)
     w_exp: float = Field(default=1.5, ge=0.1, le=10.0)
+    tension: float = Field(default=0.7, ge=0.0, le=1.0)
 
 
 class PartInfo(BaseModel):

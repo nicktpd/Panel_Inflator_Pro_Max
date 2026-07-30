@@ -6,7 +6,7 @@ import { OrbitControls } from './vendor/OrbitControls.js';
 import { GLTFLoader } from './vendor/GLTFLoader.js';
 import { RoomEnvironment } from './vendor/RoomEnvironment.js';
 
-const PART_COLOR = 0xb9b2a7;      // neutral upholstery
+const PART_COLOR = 0x14151a;      // black leather / vinyl
 const HW_COLOR = 0x6f7683;        // hardware steel-gray
 const SELECT_EMISSIVE = 0x8a6a1f; // amber glow on selection
 
@@ -182,18 +182,21 @@ export class Viewer {
       obj.userData.partId = partId;
       const cls = this.partClass[partId] || 'pillow';
       if (cls === 'pillow') {
-        // Vinyl: leather-grain bump + slight clearcoat sheen. Planar
-        // world-xy UVs (set below) keep grain density identical on
-        // every panel regardless of size.
+        // Black leather: dark base + a clearcoat sheen so a bright
+        // specular highlight sweeps across the dome as you orbit — that
+        // moving highlight is what makes the crown curvature readable on
+        // a dark surface. Leather-grain bump adds micro-detail; planar
+        // world-xy UVs (set below) keep grain density identical on every
+        // panel regardless of size.
         obj.material = new THREE.MeshPhysicalMaterial({
           color: PART_COLOR,
-          roughness: 0.55,
+          roughness: 0.52,
           metalness: 0.0,
-          clearcoat: 0.18,
-          clearcoatRoughness: 0.6,
+          clearcoat: 0.35,
+          clearcoatRoughness: 0.45,
           bumpMap: this.grainTex,
-          bumpScale: 1.4,
-          envMapIntensity: 0.55,
+          bumpScale: 0.7,
+          envMapIntensity: 0.9,
         });
         const pos = obj.geometry.attributes.position;
         const uv = new Float32Array(pos.count * 2);
