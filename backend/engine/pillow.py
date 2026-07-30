@@ -247,6 +247,7 @@ def pillow_panel(
     # are untouched. Direction = outward = negative distance gradient;
     # amount fades with depth so only the wall band moves. Reference:
     # side views in reference/NOTES.md -- real edges are never flat.
+    wall = None  # stashed belly quantities, reused for analytic wall normals
     if roll > 0.0:
         # Gradient of the SMOOTHED distance: the raw field carries the
         # footprint's random-sampling speckle, and a jittery gradient
@@ -260,12 +261,14 @@ def pillow_panel(
         ox = np.where(safe, ox / np.maximum(onorm, 1e-9), 0.0)
         oy = np.where(safe, oy / np.maximum(onorm, 1e-9), 0.0)
         t = np.clip((pv[:, 2] - zmin) / thick, 0.0, 1.0)
-        belly = 0.34 * roll * np.sin(np.pi * t) ** 0.9
+        belly_amp = 0.34 * roll
+        belly = belly_amp * np.sin(np.pi * t)
         # Smoothed field here too: raw-field speckle would modulate the
         # belly amount along the wall (periodic lumps on the silhouette).
         near_edge = np.exp(-fp.sample(dist, pv[:, :2]) / max(roll, 1e-6))
         pv[:, 0] += ox * belly * near_edge
         pv[:, 1] += oy * belly * near_edge
+        wall = (ox, oy, t, near_edge, belly_amp)
 
     dz = fp.sample(prof, pv[:, :2])
     w = np.clip((pv[:, 2] - zmin) / thick, 0.0, 1.0) ** w_exp
@@ -300,12 +303,47 @@ def pillow_panel(
     ana /= np.linalg.norm(ana, axis=1, keepdims=True)
     normals = topo.copy()
     normals[top_ids] = ana
-    # Ring vertices sit ON the wall/top junction: pure analytic normals
-    # there clash with the walls' averaged normals and the discontinuity
-    # reads as a fine sawtooth along the rim. Blend 50/50 at the ring.
-    ring_n = 0.5 * ana[: len(ring)] + 0.5 * topo[ring]
-    ring_n /= np.maximum(np.linalg.norm(ring_n, axis=1, keepdims=True), 1e-12)
-    normals[ring] = ring_n
+
+    if wall is not None:
+        # Analytic wall normals too (2D parts): the quad strip's averaged
+        # normals wobble with the alternating triangle diagonals, which a
+        # glossy material shows as vertical ribbing on the side edges.
+        # The bellied wall is a surface offset r(z) = amp*sin(pi t)*near
+        # along the outward direction, so its exact normal tilts by
+        # -dr/dz against the horizontal outward vector. At the rim the
+        # roll leaves the wall tangentially and the top's analytic normal
+        # is nearly horizontal there, so wall and top normals agree at
+        # the seam with no blending hacks.
+        ox, oy, t, near_edge, belly_amp = wall
+        drdz = belly_amp * near_edge * np.pi * np.cos(np.pi * t) / max(thick, 1e-9)
+        n_wall = np.column_stack([ox, oy, -drdz])
+        wn = np.linalg.norm(n_wall, axis=1, keepdims=True)
+        n_wall = np.divide(n_wall, wn, out=np.zeros_like(n_wall), where=wn > 1e-9)
+        # Wallness: full on the boundary band, fading inward; zero on the
+        # bottom face (which must stay flat (0,0,-1)) and where the
+        # outward direction was degenerate.
+        wallness = near_edge * np.clip((pv[:, 2] - zmin) / (2.0 * res), 0.0, 1.0)
+        wallness = wallness * (np.hypot(ox, oy) > 0.5)
+        blended = (
+            topo[: len(pv)] * (1.0 - wallness[:, None]) + n_wall * wallness[:, None]
+        )
+        bn = np.linalg.norm(blended, axis=1, keepdims=True)
+        blended = np.divide(blended, bn, out=topo[: len(pv)].copy(), where=bn > 1e-9)
+        normals[: len(pv)] = blended
+        # Top field wins on the ring/top (assigned above); re-assert.
+        normals[top_ids] = ana
+        # Ring: average of the (agreeing) wall and top analytic normals.
+        ring_mix = 0.5 * ana[: len(ring)] + 0.5 * n_wall[ring]
+        rn = np.linalg.norm(ring_mix, axis=1, keepdims=True)
+        normals[ring] = np.divide(
+            ring_mix, rn, out=ana[: len(ring)].copy(), where=rn > 1e-9
+        )
+    else:
+        # STL parts: keep the seam soft with a plain 50/50 blend.
+        ring_n = 0.5 * ana[: len(ring)] + 0.5 * topo[ring]
+        ring_n /= np.maximum(np.linalg.norm(ring_n, axis=1, keepdims=True), 1e-12)
+        normals[ring] = ring_n
+
     all_v, all_f, normals = meshops.compact_with_normals(all_v, all_f, normals)
     return all_v, all_f, normals
 

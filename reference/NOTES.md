@@ -26,6 +26,19 @@ for the 2D-import defaults. Measured/observed → encoded:
 Still pending from the user: a straight-on edge photo with a tape
 measure to confirm the 1.5″/0.5″ defaults against real dimensions.
 
+### Second calibration round (user viewport feedback on the above)
+
+- Wall ribbing + rim sawtooth were shading artifacts: walls now get
+  belly-aware ANALYTIC normals (offset-surface math) that agree with the
+  top field's normals at the seam — no averaged-normal wobble anywhere
+  on a 2D part.
+- Plateau ripples came from the membrane-tension field's coarse-grid
+  bilinear upsample; it is now smoothed on the coarse grid first.
+- Deliverable focus: exported GLB is now glTF-standard (+Y up, meters)
+  with planar UVs, analytic normals, no degenerate faces and verified
+  winding — importable into rendering software with zero cleanup. STL
+  stays mm/Z-up for CAD.
+
 Drop photos of real upholstered panels in this folder. The engine defaults
 below were checked against five photos of a production teardrop petal
 (black vinyl over a ~2" core, shared in chat 2026-07-30 — please copy the

@@ -309,6 +309,10 @@ def membrane_tension(fp: "FootprintRaster", target_cells: int = 160) -> np.ndarr
     d_mem[occ] = np.sqrt(2.0 * h)  # mm
     d_dist = ndimage.distance_transform_edt(occ) * res_c
     tau = np.where(occ, np.clip(d_mem / np.maximum(d_dist, res_c), 0.0, 1.0), 1.0)
+    # Smooth ON the coarse grid before upsampling: bilinear zoom of an
+    # unsmoothed field leaves piecewise-linear creases every `factor`
+    # cells, which surface as broad soft ripples on the crown plateau.
+    tau = ndimage.gaussian_filter(tau, sigma=1.2)
 
     if factor > 1:
         tau = ndimage.zoom(tau, (ny / H, nx / W), order=1, mode="nearest")
@@ -414,3 +418,56 @@ def export_glb_bytes(named_parts: list[tuple]) -> bytes:
 
 def export_stl_stream(v: np.ndarray, f: np.ndarray) -> io.BytesIO:
     return io.BytesIO(export_stl_bytes(v, f))
+
+
+def export_render_glb(named_parts: list[tuple]) -> bytes:
+    """GLB for RENDERING SOFTWARE, conforming to the glTF conventions the
+    engine's internal data does not: +Y up and METERS (internal data is
+    +Z up millimetres -- Blender silently corrects that, most other
+    renderers import it lying on its back and 1000x too big).
+
+    Per part it also ships what a material workflow needs out of the box:
+      * planar top-projection UVs (0..1 over the part's footprint) --
+        panels are height fields, so this unwraps cleanly for grain/
+        fabric textures without manual UV work; walls share the border
+        texels, which vinyl grain tolerates,
+      * the engine's analytic vertex normals (smooth-shaded roll/crown),
+      * zero-area faces removed (black-speckle fodder for backface-culling
+        renderers), and winding verified consistent.
+    """
+    scene = trimesh.Scene()
+    for entry in named_parts:
+        name, v, f = entry[0], np.asarray(entry[1], np.float64), np.asarray(entry[2])
+        n = entry[3] if len(entry) > 3 and entry[3] is not None else None
+
+        # Drop degenerate (zero-area) faces.
+        e1 = v[f[:, 1]] - v[f[:, 0]]
+        e2 = v[f[:, 2]] - v[f[:, 0]]
+        area2 = np.linalg.norm(np.cross(e1, e2), axis=1)
+        f = f[area2 > 1e-8]
+
+        # Planar top-projection UVs from footprint xy, before reorienting.
+        minxy = v[:, :2].min(axis=0)
+        span = np.maximum(v[:, :2].max(axis=0) - minxy, 1e-9)
+        uv = (v[:, :2] - minxy) / span
+
+        # Z-up mm -> Y-up m: (x, y, z) -> (x, z, -y), scaled to meters.
+        v2 = np.column_stack([v[:, 0], v[:, 2], -v[:, 1]]) * 0.001
+        mesh = trimesh.Trimesh(vertices=v2.astype(np.float32), faces=f, process=False)
+        if n is not None:
+            n = np.asarray(n, np.float64)
+            mesh.vertex_normals = np.column_stack(
+                [n[:, 0], n[:, 2], -n[:, 1]]
+            ).astype(np.float32)
+        else:
+            mesh.vertex_normals  # noqa: B018 (compute+cache smooth normals)
+        if not mesh.is_winding_consistent:
+            # Should not happen by construction; repair and fall back to
+            # recomputed normals rather than ship a broken mesh.
+            mesh.fix_normals()
+        mesh.visual = trimesh.visual.TextureVisuals(uv=uv)
+        scene.add_geometry(mesh, node_name=name, geom_name=name)
+    data = scene.export(file_type="glb")
+    if isinstance(data, str):
+        data = data.encode()
+    return data

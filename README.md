@@ -92,6 +92,17 @@ So the improvement loop is: ask Claude for a change → Claude pushes to
    vinyl never creases. `Esc` exits paint mode.
 5. **Export** — STL or GLB, at full (2 mm) or preview (4 mm) resolution.
 
+### Export formats (what your other software receives)
+
+- **GLB — for rendering software** (Blender, V-Ray, C4D, Keyshot…).
+  Standards-conformant glTF: **+Y up, meters**, per-part planar UVs
+  (0–1 over each panel's footprint — grain/fabric textures apply
+  immediately), the engine's smooth analytic normals baked in, no
+  degenerate faces, verified winding. It should drop into a render
+  scene with materials applied and zero cleanup.
+- **STL — for CAD / manufacturing**: millimetres, Z-up, no
+  normals/UVs (the format carries neither).
+
 ## Keyboard shortcuts
 
 | Key | Action |

@@ -529,9 +529,14 @@ def _do_export(job_id: str, project_id: str, fmt: str, res: float):
     safe_name = "".join(c if c.isalnum() or c in "-_" else "_" for c in project.name) or "export"
     fname = f"{safe_name}-pillowed-{stamp}.{fmt}"
     if fmt == "stl":
+        # STL: millimetres, Z-up (CAD/manufacturing convention).
         data = preview.build_stl([(e[1], e[2]) for e in named])
     else:
-        data = preview.build_glb(named)
+        # GLB: glTF convention for rendering software — +Y up, meters,
+        # planar UVs and the engine's smooth analytic normals baked in.
+        from .engine import meshops
+
+        data = meshops.export_render_glb(named)
     (cache / fname).write_bytes(data)
     preview.prune_part_cache(cache)
     return {"url": f"/api/projects/{project_id}/download/{fname}", "filename": fname}
