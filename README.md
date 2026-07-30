@@ -28,6 +28,21 @@ automatically. Drag an STL (or SVG/DXF outline) into the window.
 
 > **Cloud sync users:** exclude `.venv/` from sync — see `SYNC-IGNORE.txt`.
 
+## Staying up to date
+
+Install via `git clone` (not ZIP) and updates are automatic: every
+launch, `run.bat` / `run.sh` quietly does a fast-forward pull from
+GitHub and reinstalls dependencies only if they changed. Offline or
+ZIP installs simply skip the check and start normally.
+
+- Force an update / see errors: `update.bat` (or `./update.sh`).
+- Launch without checking: set the environment variable `PIPM_NO_UPDATE=1`.
+- Your saved projects are never touched by updates (`projects/` is
+  ignored by git).
+
+So the improvement loop is: ask Claude for a change → Claude pushes to
+`main` → double-click `run.bat` and you're on the new version.
+
 ## What it does
 
 1. **Import** — an STL is split into connected parts (edge-adjacency, so
