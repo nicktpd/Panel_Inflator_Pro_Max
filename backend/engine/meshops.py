@@ -46,15 +46,22 @@ class FootprintRaster:
         self.ymin = ymin
         self.res = res
 
-    def sample(self, field: np.ndarray, pts_xy: np.ndarray) -> np.ndarray:
-        """Bilinear-sample a grid-shaped field at world xy points."""
+    def sample(self, field: np.ndarray, pts_xy: np.ndarray, order: int = 1) -> np.ndarray:
+        """Sample a grid-shaped field at world xy points.
+
+        order=1 (bilinear) for fields with creases or hard zeros (the
+        raw distance, occupancy-derived fields) -- cubic would overshoot
+        them. order=3 (cubic, C2) for SMOOTH fields feeding the surface
+        function: bilinear is only C0, and its cell-boundary curvature
+        kinks set the floor on how line-free the dome can be.
+        """
         return ndimage.map_coordinates(
             field,
             [
                 (pts_xy[:, 1] - self.ymin) / self.res + MARGIN,
                 (pts_xy[:, 0] - self.xmin) / self.res + MARGIN,
             ],
-            order=1,
+            order=order,
         )
 
 
@@ -307,13 +314,24 @@ KNEE_HALF_WIDTH = 0.35
 
 
 def _smooth_clamp(p: np.ndarray, k: float = KNEE_HALF_WIDTH) -> np.ndarray:
-    """C1 clamp of p to <= 1: identity below 1-k, 1 above 1+k, and a
-    slope-matched quadratic blend in between (no crease at either end)."""
+    """C2 clamp of p to <= 1: identity below 1-k, exactly 1 above 1+k,
+    and a quintic blend in between.
+
+    C2 matters: the previous quadratic blend was only C1 -- CURVATURE
+    jumped at both ends of the band, and glossy vinyl at grazing angles
+    renders a curvature jump as a faint contour line ringing the dome
+    where the crown saturates ("I can still see lines at just the right
+    angle"). The quintic g(u) = u - u^3 + u^4/2 on the normalized band
+    matches value, slope AND curvature at both ends (g'(u) =
+    (1-u)^2(1+2u) >= 0, so it is also monotone); deep-interior points
+    still reach exactly 1 and the rise below the band is untouched.
+    """
     lo = 1.0 - k
     out = np.minimum(p, 1.0)
     band = (p > lo) & (p < 1.0 + k)
-    pb = p[band]
-    out[band] = pb - (pb - lo) ** 2 / (4.0 * k)
+    u = (p[band] - lo) / (2.0 * k)
+    g = u - u**3 + 0.5 * u**4
+    out[band] = lo + 2.0 * k * g
     return out
 
 
@@ -497,8 +515,19 @@ def poisson_wall_distance(fp: "FootprintRaster", target_cells: int = 240) -> np.
         if h is None:
             return None
     gy, gx = np.gradient(h, fp.res)
-    g = np.hypot(gx, gy)
-    d = np.sqrt(g * g + 2.0 * h) - g
+    g2 = gx * gx + gy * gy
+    # Regularized Spalding: d = sqrt(g^2 + 2h + eps^2) - sqrt(g^2 + eps^2).
+    # The textbook form subtracts |grad h|, whose CONICAL kink where the
+    # gradient vanishes -- i.e. exactly along the dome's ridge line and
+    # at its apex -- puts a curvature discontinuity down the middle of
+    # the crown (a faint line at grazing angles). Adding eps^2 inside
+    # both square roots keeps the formula smooth through the ridge; at
+    # the walls (h = 0) the two terms cancel identically, so the field
+    # stays exactly 0 there and first-order exact nearby. eps scales with
+    # the membrane's own height so the rounding is proportionate on any
+    # panel size.
+    eps2 = (0.05 * np.sqrt(2.0 * h.max() + 1e-12)) ** 2
+    d = np.sqrt(g2 + 2.0 * h + eps2) - np.sqrt(g2 + eps2)
     return np.where(grid, np.maximum(d, 0.0), 0.0)
 
 
@@ -583,7 +612,13 @@ def membrane_tension(fp: "FootprintRaster", target_cells: int = 160) -> np.ndarr
     d_mem = np.zeros((H, W))
     d_mem[occ] = np.sqrt(2.0 * h)  # mm
     d_dist = ndimage.distance_transform_edt(occ) * res_c
-    tau = np.where(occ, np.clip(d_mem / np.maximum(d_dist, res_c), 0.0, 1.0), 1.0)
+    # C2 soft clip instead of a hard clip at 1: the clip contour (where
+    # membrane width first equals nearest-edge distance) is a closed
+    # curve across the dome, and a slope discontinuity there reads as a
+    # faint line at grazing angles. Small knee: suppression strength in
+    # genuinely narrow regions is unchanged.
+    ratio = np.where(occ, d_mem / np.maximum(d_dist, res_c), 1.0)
+    tau = np.where(occ, np.maximum(_smooth_clamp(ratio, 0.15), 0.0), 1.0)
     # Smooth ON the coarse grid before upsampling: bilinear zoom of an
     # unsmoothed field leaves piecewise-linear creases every `factor`
     # cells, which surface as broad soft ripples on the crown plateau.

@@ -44,7 +44,10 @@ EXPORT_GRID = 6.0
 #     the exact edge distance (1D roll table, closed-form crown), rasters
 #     only for smooth fields -- kills the curved-rim moire wrinkles;
 #     0.01 mm arc flattening; wall normals run to the base ring.
-ENGINE_VERSION = 8
+# 9 = C2 (curvature-continuous) surface: quintic saturation knee, quintic
+#     blend weight, soft tension clip, regularized Spalding ridge, cubic
+#     sampling of smooth fields -- no grazing-angle contour lines.
+ENGINE_VERSION = 9
 
 
 def params_key(params: dict, res: float, grid_step: float, mask_version: int) -> str:

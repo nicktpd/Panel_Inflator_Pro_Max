@@ -172,6 +172,29 @@ Result: rectangle, circle and pedal are watertight (0 open edges) at
 preview and export; regression test builds a LINE+ARC pill DXF and
 asserts chaining + watertightness end-to-end.
 
+### Ninth round (user: faint lines on the dome at "just the right angle")
+
+Glossy vinyl at grazing angles reveals CURVATURE discontinuities, not
+just slope breaks -- and after v8 every remaining line traced to a
+C1-only construct whose contour rings the dome. All made C2, verified
+by measuring curvature steps along cross-sections (max step down
+10-30x, now indistinguishable from background):
+
+- saturation knee: quadratic C1 clamp -> quintic C2 clamp
+  (g(u) = u - u^3 + u^4/2; monotone, matches value/slope/curvature at
+  both band ends; deep centers still reach exactly the crown);
+- exact-vs-membrane blend weight: cubic smoothstep (C1) -> quintic
+  6u^5 - 15u^4 + 10u^3 (C2);
+- tension factor: hard clip at 1 -> C2 soft clip (knee 0.15);
+- Spalding wall distance: subtracting |grad h| has a conical kink where
+  the gradient vanishes -- i.e. along the dome's RIDGE line -- fixed by
+  the regularized form sqrt(g^2+2h+eps^2) - sqrt(g^2+eps^2), which is
+  smooth through the ridge and still exactly 0 at walls (eps scales
+  with membrane height);
+- smooth raster fields (membrane, tension, mask, darts) are sampled
+  with CUBIC interpolation inside the surface function -- bilinear is
+  only C0 and its cell-boundary kinks set the smoothness floor.
+
 ### Eighth round (user petal render: bumpy spots around the bulb rim)
 
 The petal (first genuinely curved production outline) exposed the last

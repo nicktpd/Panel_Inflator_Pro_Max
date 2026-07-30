@@ -270,17 +270,20 @@ def pillow_panel(
         else:
             d = fp.sample(dist_raw, xy)
         w = np.clip((d - inner) / max(outer - inner, 1e-9), 0.0, 1.0)
-        w = w * w * (3.0 - 2.0 * w)
-        d_c = d * (1.0 - w) + fp.sample(d_int, xy) * w
+        # Quintic (C2) blend: the cubic smoothstep is only C1, and its
+        # curvature jump at both band edges drew faint offset-contour
+        # lines around the dome at grazing angles.
+        w = w * w * w * (w * (6.0 * w - 15.0) + 10.0)
+        d_c = d * (1.0 - w) + fp.sample(d_int, xy, order=3) * w
         if tau_s is not None:
-            d_c = d_c * ((1.0 - tension) + tension * fp.sample(tau_s, xy))
+            d_c = d_c * ((1.0 - tension) + tension * fp.sample(tau_s, xy, order=3))
         h = meshops.crown_profile(d_c, crown, dref, exp)
         if mask_grid is not None:
-            h = h * fp.sample(mask_grid, xy)
+            h = h * fp.sample(mask_grid, xy, order=3)
         if drop_tab is not None:
             h = h + np.interp(d, drop_tab[0], drop_tab[1])
         if darts_f is not None:
-            h = h + fp.sample(darts_f, xy)
+            h = h + fp.sample(darts_f, xy, order=3)
         return h
 
     # --- delete flat top, keep sides/fillets/bottom ---
