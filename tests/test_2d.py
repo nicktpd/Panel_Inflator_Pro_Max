@@ -289,8 +289,14 @@ def test_symmetric_panel_pillows_symmetrically():
     )
 
     top = pv[pv[:, 2] > T * 0.55]
-    xs = np.arange(15.0, W - 14.0, 3.0)
-    ys = np.arange(15.0, H - 14.0, 3.0)
+    # Probe sets must be mirror-symmetric themselves: a plain arange whose
+    # step doesn't divide the span pairs a probe with a point 1-2 mm off
+    # its true mirror, and on the steep shoulder that reads as ~1 mm of
+    # fake asymmetry. Build half the probes and reflect them.
+    xs_half = np.arange(15.0, W / 2, 3.0)
+    ys_half = np.arange(15.0, H / 2, 3.0)
+    xs = np.concatenate([xs_half, (W - xs_half)[::-1]])
+    ys = np.concatenate([ys_half, (H - ys_half)[::-1]])
     GX, GY = np.meshgrid(xs, ys)
     Z = griddata(top[:, :2], top[:, 2], (GX, GY), method="linear")
     assert np.isfinite(Z).all()

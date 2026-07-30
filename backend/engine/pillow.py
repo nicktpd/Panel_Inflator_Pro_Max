@@ -153,19 +153,34 @@ def pillow_panel(
     #     down a rectangle's middle) and along corner bisectors. Because
     #     the crown never fully saturates on panel-sized parts, driving
     #     the crown with raw distance printed those creases onto the top
-    #     as visible peak/diagonal lines. The smoothed field rounds them
-    #     -- the look the top had before the exact-distance rework.
+    #     as visible peak/diagonal lines -- and BLURRING the field only
+    #     widens a crease into a soft line (render feedback: even soft
+    #     lines are wrong on the padded face). The interior field is
+    #     therefore the Poisson/Spalding wall distance
+    #     (meshops.poisson_wall_distance): the inflated-membrane solution
+    #     normalized to match wall distance near every edge. It is smooth
+    #     everywhere by construction -- a membrane has no fold lines --
+    #     so the face carries NO crease at any blur setting, while the
+    #     calibrated near-edge rise is preserved (the field is exact on a
+    #     strip and first-order exact along every straight wall).
     # The blend starts past the roll zone and completes over ~2.5x the
-    # blur radius, i.e. where the smoothed field's edge-dip has decayed
-    # to nothing, so the rim behaviour is untouched and no concavity
-    # (bell) can be reintroduced. Shape-generic: works for any outline.
+    # blur radius, i.e. deep enough that the discrete solve's near-wall
+    # error never touches the rim, so no concavity (bell) can be
+    # reintroduced. Shape-generic: works for any outline, incl. holes.
     roll = min(edge_roll, thick * 0.6) if edge_roll > 0.0 else 0.0
-    sigma_mm = sigma * cell * res  # blur radius in mm (res-invariant)
+    sigma_mm = sigma * cell * res  # transition scale in mm (res-invariant)
+    d_int = meshops.poisson_wall_distance(fp)
+    if d_int is None:
+        d_int = dist  # degenerate domain: fall back to the smoothed EDT
+    else:
+        # Half-cell polish of the discrete solve; the field itself is
+        # smooth, this only irons raster-level noise.
+        d_int = ndimage.gaussian_filter(d_int, sigma=1.0)
     inner = max(roll, 3.0 * res)
     outer = inner + 2.5 * max(sigma_mm, res)
     wgt = np.clip((dist_raw - inner) / max(outer - inner, 1e-9), 0.0, 1.0)
     wgt = wgt * wgt * (3.0 - 2.0 * wgt)
-    d_c = dist_raw * (1.0 - wgt) + dist * wgt
+    d_c = dist_raw * (1.0 - wgt) + d_int * wgt
 
     # Tension: pull the crown down where the membrane is more constrained
     # than the nearest-edge distance implies (tapers, pinches, tips). The
@@ -273,15 +288,16 @@ def pillow_panel(
     collar = _collar_points(ring_xy, fp, dist_raw, dist, grid_step)
 
     inset = grid_step * GRID_INSET_FACTOR
-    # Centre the grid within the footprint span: anchoring at xmin puts
-    # the last row/column a partial step from the far edge, so a mirror-
-    # symmetric outline got an asymmetric triangulation (and asymmetric
-    # chord error on the dome). Centred, symmetric shapes mesh
+    # Centre the grid within the PANEL's own span (pv extremes, not the
+    # raster origin -- fp.xmin is the first cell centre, offset from the
+    # outline corner by the lattice-centring slack): anchoring off-centre
+    # puts the last row/column a partial step from the far edge, so a
+    # mirror-symmetric outline got an asymmetric triangulation (and
+    # asymmetric chord error on the dome). Centred, symmetric shapes mesh
     # symmetrically.
-    span_x = pv[:, 0].max() - fp.xmin
-    span_y = pv[:, 1].max() - fp.ymin
-    gx0 = fp.xmin + (span_x % grid_step) / 2.0
-    gy0 = fp.ymin + (span_y % grid_step) / 2.0
+    pxmin, pymin = pv[:, 0].min(), pv[:, 1].min()
+    gx0 = pxmin + ((pv[:, 0].max() - pxmin) % grid_step) / 2.0
+    gy0 = pymin + ((pv[:, 1].max() - pymin) % grid_step) / 2.0
     gx, gy = np.meshgrid(
         np.arange(gx0, pv[:, 0].max() + 1e-9, grid_step),
         np.arange(gy0, pv[:, 1].max() + 1e-9, grid_step),

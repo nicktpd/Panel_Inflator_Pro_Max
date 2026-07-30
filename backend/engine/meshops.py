@@ -112,8 +112,25 @@ def rasterize_footprint(
     zmax = float(pv[:, 2].max())
     xmin = float(pv[:, 0].min())
     ymin = float(pv[:, 1].min())
-    nx = int(np.ceil((pv[:, 0].max() - xmin) / res)) + 2 * MARGIN
-    ny = int(np.ceil((pv[:, 1].max() - ymin) / res)) + 2 * MARGIN
+    span_x = float(pv[:, 0].max()) - xmin
+    span_y = float(pv[:, 1].max()) - ymin
+    # Centre the CELL CENTRES on the footprint: fields (exact distance,
+    # Poisson membrane, tension) are evaluated at cell centres, so a
+    # mirror-symmetric panel only produces mirror-symmetric fields if the
+    # centre lattice is itself mirror-symmetric about the panel's middle.
+    # Anchoring the first centre at the outline's min corner (the old
+    # behaviour) skews every centre by up to res/2 relative to its mirror
+    # partner whenever span/res is fractional -- measured as ~res/2 of
+    # crown asymmetry. The first centre goes at half the leftover span so
+    # first and last centres sit symmetrically inside the outline; points
+    # are stamped by ROUNDING to the nearest centre (cell = centre +-
+    # res/2), which keeps stamping consistent with that convention.
+    nxc = max(int(np.floor(span_x / res + 0.5)) + 1, 1)
+    nyc = max(int(np.floor(span_y / res + 0.5)) + 1, 1)
+    xmin += (span_x - (nxc - 1) * res) / 2.0
+    ymin += (span_y - (nyc - 1) * res) / 2.0
+    nx = nxc + 2 * MARGIN
+    ny = nyc + 2 * MARGIN
 
     vtop = top_vertex_mask(pv, zmax)
     ftop = pf[vtop[pf].all(axis=1)]  # flat-top triangles
@@ -135,8 +152,8 @@ def rasterize_footprint(
 
     grid = np.zeros((ny, nx), dtype=bool)
     grid[
-        np.clip(((allp[:, 1] - ymin) / res).astype(int) + MARGIN, 0, ny - 1),
-        np.clip(((allp[:, 0] - xmin) / res).astype(int) + MARGIN, 0, nx - 1),
+        np.clip(np.floor((allp[:, 1] - ymin) / res + 0.5).astype(int) + MARGIN, 0, ny - 1),
+        np.clip(np.floor((allp[:, 0] - xmin) / res + 0.5).astype(int) + MARGIN, 0, nx - 1),
     ] = True
     grid = ndimage.binary_closing(grid, np.ones((3, 3)), iterations=3)
     grid = fill_small_holes(grid, res)
@@ -303,6 +320,149 @@ def edge_roll_drop(dist_raw: np.ndarray, roll: float, res: float = 0.0) -> np.nd
     """
     d = np.clip(dist_raw - res, 0.0, roll)
     return np.sqrt(np.maximum(roll * roll - (roll - d) ** 2, 0.0)) - roll
+
+
+def _membrane_solve(occ: np.ndarray, res: float) -> np.ndarray | None:
+    """Solve grad^2 h = -1 (h = 0 outside) over an occupancy grid.
+
+    Returns h (mm^2) as a full grid (0 outside), or None if the domain is
+    degenerate. 5-point Laplacian, direct sparse solve.
+    """
+    from scipy import sparse
+    from scipy.sparse.linalg import spsolve
+
+    ny, nx = occ.shape
+    cells = np.argwhere(occ)
+    if len(cells) < 9:
+        return None
+    idx = -np.ones((ny, nx), dtype=np.int64)
+    idx[occ] = np.arange(len(cells))
+    n = len(cells)
+    ci, cj = cells[:, 0], cells[:, 1]
+    k = np.arange(n)
+    rows = [k]
+    colz = [k]
+    data = [np.full(n, 4.0)]
+    for di, dj in ((-1, 0), (1, 0), (0, -1), (0, 1)):
+        ni, nj = ci + di, cj + dj
+        valid = (ni >= 0) & (ni < ny) & (nj >= 0) & (nj < nx)
+        nn = -np.ones(n, dtype=np.int64)
+        nn[valid] = idx[ni[valid], nj[valid]]
+        has = nn >= 0
+        rows.append(k[has])
+        colz.append(nn[has])
+        data.append(np.full(int(has.sum()), -1.0))
+    a = sparse.coo_matrix(
+        (np.concatenate(data), (np.concatenate(rows), np.concatenate(colz))),
+        shape=(n, n),
+    ).tocsr()
+    try:
+        h = spsolve(a, np.full(n, res * res))
+    except Exception:
+        return None
+    hg = np.zeros((ny, nx))
+    hg[occ] = np.maximum(h, 0.0)
+    return hg
+
+
+def poisson_wall_distance(fp: "FootprintRaster", target_cells: int = 240) -> np.ndarray | None:
+    """Crease-free distance-like field: Spalding/Poisson wall distance.
+
+    The nearest-edge distance function ALWAYS has slope creases -- along
+    the medial axis (the "spine" down the middle of a rectangle) and
+    along corner bisectors -- and any crown driven by it prints those
+    creases onto the upholstered face as visible lines, no matter how
+    much the field is blurred (a blurred crease is a soft line, not no
+    line). An inflated membrane has no such folds: the solution h of
+    grad^2 h = -1, h = 0 on every edge, is smooth everywhere inside.
+
+    Spalding's normalization turns h into a distance-LIKE field,
+
+        d = sqrt(|grad h|^2 + 2 h) - |grad h|,
+
+    which is EXACT on an infinite strip (everywhere, including the
+    centerline) and first-order exact near every straight wall -- so the
+    calibrated near-edge rise is preserved -- while rounding the medial
+    axis and corner pockets with the physics of real stretched fabric.
+
+    h is solved on a coarsened grid (<= ``target_cells`` per side; a
+    direct full-res solve costs seconds) and upsampled with a cubic zoom
+    -- h is C-infinity smooth, so the coarse solve loses nothing visible;
+    its only inaccuracy is within a couple of coarse cells of the walls,
+    which the caller's raw/interior blend never uses. The gradient for
+    Spalding's formula is taken at full resolution AFTER upsampling.
+    """
+    grid = fp.grid
+    ny, nx = grid.shape
+    factor = max(1, int(np.ceil(max(ny, nx) / target_cells)))
+    if factor > 1 and factor % 2 == 0:
+        # An EVEN factor makes a symmetric pad impossible for odd grid
+        # dims ((-ny) % 2 is then fixed at 1), so round up to odd.
+        factor += 1
+    if factor > 1:
+        # Pad so the pooling blocks are CENTRED on the footprint: blocks
+        # anchored at array index 0 chop a partial block off one side
+        # only, which skews the coarse h and shows up as a millimetre-
+        # scale asymmetry of the crown. The pad total is forced EVEN (an
+        # odd pad can only go on one side, which is the same skew again);
+        # with an odd factor, adding one more block flips parity, so an
+        # even pad always exists.
+        pad_y = (-ny) % factor
+        if pad_y % 2:
+            pad_y += factor
+        pad_x = (-nx) % factor
+        if pad_x % 2:
+            pad_x += factor
+        gp = np.pad(
+            grid,
+            ((pad_y // 2, pad_y - pad_y // 2), (pad_x // 2, pad_x - pad_x // 2)),
+        )
+        occ = (
+            gp.reshape(gp.shape[0] // factor, factor, gp.shape[1] // factor, factor)
+            .mean(axis=(1, 3))
+            >= 0.5
+        )
+        h = _membrane_solve(occ, fp.res * factor)
+        if h is None:
+            return None
+        h = ndimage.zoom(
+            h, (gp.shape[0] / h.shape[0], gp.shape[1] / h.shape[1]),
+            order=3, mode="nearest",
+        )
+        h = h[pad_y // 2 : pad_y // 2 + ny, pad_x // 2 : pad_x // 2 + nx]
+        if h.shape != grid.shape:
+            h = np.pad(
+                h, ((0, ny - h.shape[0]), (0, nx - h.shape[1])), mode="edge"
+            )
+        h = np.where(grid, np.maximum(h, 0.0), 0.0)
+        # Red-black SOR sweeps at FULL resolution, seeded with the coarse
+        # solution: the coarse solve is only wrong within a couple of
+        # coarse cells of the walls (high-frequency error), which
+        # relaxation kills fast -- and the sweeps re-symmetrize whatever
+        # block quantization the pooling left. Cost: a few np.rolls per
+        # sweep, negligible next to the sparse solve.
+        rhs = fp.res * fp.res
+        checker = (np.add.outer(np.arange(ny), np.arange(nx)) % 2).astype(bool)
+        omega = 1.7
+        for _ in range(20 * factor):
+            for color in (checker, ~checker):
+                nb = (
+                    np.roll(h, 1, 0) + np.roll(h, -1, 0)
+                    + np.roll(h, 1, 1) + np.roll(h, -1, 1)
+                )
+                gs = 0.25 * (nb + rhs)
+                upd = color & grid
+                h[upd] += omega * (gs[upd] - h[upd])
+            h[~grid] = 0.0
+        h = np.maximum(h, 0.0)
+    else:
+        h = _membrane_solve(grid, fp.res)
+        if h is None:
+            return None
+    gy, gx = np.gradient(h, fp.res)
+    g = np.hypot(gx, gy)
+    d = np.sqrt(g * g + 2.0 * h) - g
+    return np.where(grid, np.maximum(d, 0.0), 0.0)
 
 
 def membrane_tension(fp: "FootprintRaster", target_cells: int = 160) -> np.ndarray:

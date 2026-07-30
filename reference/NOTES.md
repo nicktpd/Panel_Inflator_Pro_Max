@@ -112,6 +112,33 @@ real driver was found by rendering the mesh with the user's own camera
   the exact-zero distance inside holes). Export is watertight: 0 open
   edges at both resolutions.
 
+### Sixth round (user headboard render: NO lines may ever appear on
+### the padded face, even soft ones)
+
+Blurring the min-distance field (fifth round) widened the medial-axis /
+corner-bisector creases into soft wide lines -- still visible on a
+glossy face under studio lighting. Structural fix: the interior of the
+crown's drive field is now the **Poisson/Spalding wall distance**
+(`meshops.poisson_wall_distance`): solve the inflated-membrane equation
+grad^2 h = -1 (h = 0 at every edge), then normalize with Spalding's
+formula d = sqrt(|grad h|^2 + 2h) - |grad h|. This field:
+
+- is smooth everywhere inside (a membrane has no fold lines) -- the
+  face carries NO crease at any setting, by construction;
+- equals the true wall distance exactly on a strip and to first order
+  near every straight wall, so the calibrated near-edge rise, the roll,
+  and the convex bell-free roll-over are unchanged (the raw/interior
+  depth blend from round five still guards the rim);
+- naturally lowers corner pockets and narrow tails (it IS the membrane
+  physics the tension factor approximates).
+
+Implementation notes: solved on a coarsened grid (odd pooling factor +
+even padding so mirror symmetry survives; cubic upsample; red-black SOR
+polish sweeps at full res). The raster lattice is now centred on the
+panel (cell CENTRES mirror-symmetric, stamping by rounding), which
+makes every grid-derived field exactly symmetric for symmetric
+outlines. Engine v6.
+
 ### Fifth round (user: shape is right, but peak/corner LINES on top)
 
 Driving the crown with the raw min-distance printed the field's slope

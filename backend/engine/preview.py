@@ -34,7 +34,10 @@ EXPORT_GRID = 6.0
 #     across seam, corner pinholes closed.
 # 5 = depth-blended drive field: exact distance near the rim, smoothed
 #     interior (no medial-axis/corner-bisector crease lines on top).
-ENGINE_VERSION = 5
+# 6 = membrane face: interior driven by the Poisson/Spalding wall
+#     distance -- no fold lines on the padded face by construction;
+#     raster lattice centred so all fields mirror symmetric shapes.
+ENGINE_VERSION = 6
 
 
 def params_key(params: dict, res: float, grid_step: float, mask_version: int) -> str:
