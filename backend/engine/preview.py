@@ -28,7 +28,8 @@ EXPORT_GRID = 6.0
 # Bump whenever the pillow engine's OUTPUT changes for identical inputs
 # (algorithm fixes, not parameter changes), so stale caches from older
 # engine versions are never served. 2 = exact-distance-field rework.
-ENGINE_VERSION = 2
+# 3 = monotone side-wall belly (no bell flare below the dome's landing).
+ENGINE_VERSION = 3
 
 
 def params_key(params: dict, res: float, grid_step: float, mask_version: int) -> str:

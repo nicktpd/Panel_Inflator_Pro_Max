@@ -269,13 +269,18 @@ def pillow_panel(
     new_v = np.column_stack([pts2d, newz])
 
     # --- displace kept verts; bottom pinned, sides barrel with height ---
-    # Side belly (2D parts only): the stuffed edge bows OUTWARD in plan,
-    # widest just above mid-height, returning to the footprint at the
-    # bottom (board edge) and at the top ring (where the roll takes over).
-    # sin(pi*t) is zero at both, so the base outline and the welded seam
-    # are untouched. Direction = outward = negative distance gradient;
-    # amount fades with depth so only the wall band moves. Reference:
-    # side views in reference/NOTES.md -- real edges are never flat.
+    # Side belly (2D parts only): the stuffed edge bows OUTWARD in plan.
+    # The weight is t^2 -- zero (pinned) at the board's base outline and
+    # MAXIMAL at the welded top seam, so the widest point of the side
+    # silhouette is exactly where the dome's roll lands, and the wall
+    # tucks monotonically back under toward the base like wrapped vinyl.
+    # It was sin(pi*t) (widest at mid-height, pinned at BOTH ends), which
+    # made the dome roll down to a waist at the seam and then flare back
+    # out below it -- a bell profile the viewport feedback flagged; a
+    # monotone weight cannot produce a re-entrant waist. Direction =
+    # outward = negative distance gradient; amount fades with depth so
+    # only the wall band moves. Reference: side views in
+    # reference/NOTES.md -- edges bulge near the TOP, never at mid-air.
     wall = None  # stashed belly quantities, reused for analytic wall normals
     if roll > 0.0:
         # Gradient of the SMOOTHED distance: the raw field carries the
@@ -290,8 +295,8 @@ def pillow_panel(
         ox = np.where(safe, ox / np.maximum(onorm, 1e-9), 0.0)
         oy = np.where(safe, oy / np.maximum(onorm, 1e-9), 0.0)
         t = np.clip((pv[:, 2] - zmin) / thick, 0.0, 1.0)
-        belly_amp = 0.34 * roll
-        belly = belly_amp * np.sin(np.pi * t)
+        belly_amp = 0.15 * roll
+        belly = belly_amp * t * t
         # Smoothed field here too: raw-field speckle would modulate the
         # belly amount along the wall (periodic lumps on the silhouette).
         near_edge = np.exp(-fp.sample(dist, pv[:, :2]) / max(roll, 1e-6))
@@ -337,14 +342,14 @@ def pillow_panel(
         # Analytic wall normals too (2D parts): the quad strip's averaged
         # normals wobble with the alternating triangle diagonals, which a
         # glossy material shows as vertical ribbing on the side edges.
-        # The bellied wall is a surface offset r(z) = amp*sin(pi t)*near
-        # along the outward direction, so its exact normal tilts by
-        # -dr/dz against the horizontal outward vector. At the rim the
-        # roll leaves the wall tangentially and the top's analytic normal
-        # is nearly horizontal there, so wall and top normals agree at
-        # the seam with no blending hacks.
+        # The bellied wall is a surface offset r(z) = amp*t^2*near along
+        # the outward direction, so its exact normal tilts by -dr/dz
+        # against the horizontal outward vector. At the rim the roll
+        # leaves the wall tangentially and the top's analytic normal is
+        # nearly horizontal there, so wall and top normals agree at the
+        # seam with no blending hacks.
         ox, oy, t, near_edge, belly_amp = wall
-        drdz = belly_amp * near_edge * np.pi * np.cos(np.pi * t) / max(thick, 1e-9)
+        drdz = belly_amp * near_edge * 2.0 * t / max(thick, 1e-9)
         n_wall = np.column_stack([ox, oy, -drdz])
         wn = np.linalg.norm(n_wall, axis=1, keepdims=True)
         n_wall = np.divide(n_wall, wn, out=np.zeros_like(n_wall), where=wn > 1e-9)

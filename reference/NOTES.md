@@ -62,6 +62,27 @@ asymmetry and crumpled corners. Root causes found and fixed:
 After: left/right and front/back asymmetry ≤ 0.5 mm at export
 (tessellation chords), preview silhouette matches export.
 
+### Fourth calibration round (viewport feedback: bell-shaped sides,
+### 2026-07-30)
+
+User verdict on the third round: the dome top is right ("super soft,
+rolls off very gently just like my photos") — do not touch it. But in a
+lengthwise side view the shape belled: the dome rolled down to a waist
+NARROWER than the panel, then the wall flared back out below it.
+
+Cause: the side-wall belly weight was `sin(pi*t)` — pinned at the base
+AND at the welded top seam, widest at mid-height. The dome therefore
+landed on the pinch and the wall bulged out 4.3 mm beneath it.
+
+Fix: belly weight is now `t^2` with amplitude `0.15*roll` — zero at the
+base, monotone, maximal AT the seam. The widest point of the silhouette
+is exactly where the dome's roll lands, and the wall tucks continuously
+back under toward the base like real wrapped vinyl (photos: edges bulge
+near the top, tuck at the bottom lip). A monotone weight cannot produce
+a re-entrant waist at any parameter setting. The top height field is
+untouched. Analytic wall normals updated for the new offset profile
+(dr/dz = 2*amp*t/thickness).
+
 ### Second calibration round (user viewport feedback on the above)
 
 - Wall ribbing + rim sawtooth were shading artifacts: walls now get
