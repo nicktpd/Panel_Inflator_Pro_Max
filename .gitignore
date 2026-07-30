@@ -1,8 +1,9 @@
 .venv/
 __pycache__/
 *.pyc
-projects/*/cache/
-projects/*/uploads/
+# Saved projects are user data (synced via cloud storage, not git).
+projects/*
+!projects/.gitkeep
 tests/fixtures/*.stl
 tests/fixtures/*.glb
 tests/fixtures/*.svg

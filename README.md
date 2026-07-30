@@ -44,12 +44,46 @@ automatically. Drag an STL (or SVG/DXF outline) into the window.
    tweak crown/DREF/exponent per part with live preview, then export a
    full-resolution binary STL or GLB.
 
+## Using it
+
+1. **Import** — drag in an `.stl`, `.svg`, or `.dxf`. 2D files first ask
+   for units, base thickness (default 50.8 mm = 2"), and edge roundover
+   (default 8 mm). Big STLs show a progress bar; nothing blocks.
+2. **Review parts** — the sidebar lists every connected component with a
+   `PILLOW` / `PASS` chip (click the chip to reclassify). Click a part in
+   the list or in the 3D view to select it.
+3. **Tune** — global sliders set the defaults; a selected part can
+   override them (crown, saturation width, exponent, smoothing) or be
+   reset to global. The preview recomputes live (~400 ms debounce), and
+   only changed parts are recomputed thanks to per-part caching.
+4. **Paint** (optional) — with a part selected, open **Loft brush** and
+   enter paint mode. Drag on the surface: blue regions loft less, orange
+   more. Paint / Smooth / Erase modes, adjustable radius, strength and
+   target multiplier. Strokes are blurred slightly on the backend so the
+   vinyl never creases. `Esc` exits paint mode.
+5. **Export** — STL or GLB, at full (2 mm) or preview (4 mm) resolution.
+
 ## Keyboard shortcuts
 
 | Key | Action |
 | --- | ------ |
 | `R` | Reset camera view |
 | `B` | Before/after toggle |
+| `Esc` | Deselect / exit paint mode |
+
+## Performance (measured)
+
+A synthetic 11-petal FlowerBoard analog — 1.79M faces, 90 MB STL, petals
+sharing hub vertices, plus mounting pins — on a modest 2-core container:
+
+| Operation | Time |
+| --- | --- |
+| Import + split + classify | ~13 s |
+| First full preview | ~5 s |
+| Preview after tweaking one petal | ~3 s (10 of 11 parts cached) |
+| Full-res (2 mm) STL export | ~6 s |
+
+Peak backend memory: **1.7 GB** — safe on a 3–4 GB machine.
 
 ## Screenshots
 
@@ -76,3 +110,16 @@ tests/              engine + API tests (fixtures generated procedurally)
 - **Huge STL is slow to import** — normal; the 3D preview uses a coarser
   raster (4 mm) than export (2 mm). Watch the progress bar; the browser
   never blocks on long operations.
+- **A panel imported as `PASS`** — components under 10k faces are assumed
+  to be hardware, and a part with no flat top can't be pillowed. Click
+  the chip in the part list to force it to `PILLOW` if it's a real panel.
+- **A hole in my outline got filled in** — enclosed voids smaller than
+  ~200 mm² are treated as mesh noise and filled. Real cutouts (25 mm+
+  across) always survive and pull the fabric down toward their rims.
+- **SVG imports at the wrong size** — pick the right unit in the import
+  dialog; "SVG px at 96 dpi" is what Inkscape exports by default.
+
+## Roadmap
+
+Phase 4 (not built yet): trace a photo/sketch (PNG/JPG) into an outline —
+see the disabled "Trace sketch" button and `backend/engine/trace_stub.py`.
