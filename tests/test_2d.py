@@ -255,3 +255,40 @@ def test_extrusion_watertight_enough():
     assert v[:, 2].min() == pytest.approx(0.0, abs=1e-9)
     # Crown actually applied
     assert v[:, 2].max() > 50.8 + 10.0
+
+
+def test_symmetric_panel_pillows_symmetrically():
+    """A mirror-symmetric outline must produce a mirror-symmetric surface.
+
+    Regression for the third calibration round (reference/NOTES.md): the
+    cell-quantized EDT skewed the crown whenever the span didn't divide
+    evenly by the raster res, and a margin bug drew the corner fold darts
+    6 mm off-position -- together up to ~3 mm left/right height asymmetry
+    on the 36x12 reference panel. Uses a span that does NOT divide evenly
+    by the raster resolution on purpose.
+    """
+    from scipy.interpolate import griddata
+
+    W, H, T = 914.4, 304.8, 38.1
+    rect = sg.box(0, 0, W, H)
+    v, f = import_2d.extrude_with_roundover(rect, T)
+    corners = [
+        [0.0, 0.0, 0.7071, 0.7071, 90.0],
+        [W, 0.0, -0.7071, 0.7071, 90.0],
+        [W, H, -0.7071, -0.7071, 90.0],
+        [0.0, H, 0.7071, -0.7071, 90.0],
+    ]
+    pv, _ = pillow.pillow_panel(
+        v, f, edge_roll=12.7, corners=corners, res=2.0, grid_step=6.0
+    )
+
+    top = pv[pv[:, 2] > T * 0.55]
+    xs = np.arange(15.0, W - 14.0, 3.0)
+    ys = np.arange(15.0, H - 14.0, 3.0)
+    GX, GY = np.meshgrid(xs, ys)
+    Z = griddata(top[:, :2], top[:, 2], (GX, GY), method="linear")
+    assert np.isfinite(Z).all()
+    # Sub-millimetre mirror symmetry both ways (residual = chords of the
+    # 6 mm triangulation, not the field).
+    assert np.abs(Z - Z[:, ::-1]).max() < 0.8
+    assert np.abs(Z - Z[::-1, :]).max() < 0.8

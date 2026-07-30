@@ -41,18 +41,27 @@ GRID_INSET_FACTOR = 1.0  # inset = grid_step * factor
 # culled: they bridge concavities or holes in the outline.
 CULL_DIST = 0.5
 
-# Extra smoothing (in grid cells) applied to the profile after a painted
-# mask is multiplied in, so mask edges never crease the surface.
+# Extra smoothing (in grid cells AT EXPORT RES) applied to the profile
+# after a painted mask is multiplied in, so mask edges never crease the
+# surface.
 MASK_BLUR_SIGMA = 1.5
 
-# Always-on light smoothing (grid cells) of the finished profile. The
-# crown formula has a slope discontinuity at its saturation knee (where
-# dist/dref reaches 1 and the surface stops rising), which reads as a
-# faint crease line around the shoulder of the bulge. A gentle blur of
-# the profile after the nonlinearity rounds that knee into a smooth
-# shoulder without moving the peak -- "upholstery has no sharp interior
-# lines" (spec section 5).
+# Always-on light smoothing (grid cells AT EXPORT RES) of the finished
+# profile. The crown formula has a slope discontinuity at its saturation
+# knee (where dist/dref reaches 1 and the surface stops rising), which
+# reads as a faint crease line around the shoulder of the bulge. A gentle
+# blur of the profile after the nonlinearity rounds that knee into a
+# smooth shoulder without moving the peak -- "upholstery has no sharp
+# interior lines" (spec section 5).
 KNEE_BLUR_SIGMA = 1.6
+
+# Reference raster resolution the cell-based smoothing amounts are
+# calibrated at (the export resolution). Sigmas given in cells are scaled
+# by REF_RES / res before use, so they cover the same PHYSICAL distance
+# at every resolution -- without this, the 4 mm preview smoothed twice as
+# many millimetres as the 2 mm export and previewed a visibly softer,
+# wider shoulder than the exported part ("preview doesn't match export").
+REF_RES = 2.0
 
 
 def pillow_panel(
@@ -125,8 +134,12 @@ def pillow_panel(
     # --- footprint raster + interior distance + crown profile ---
     # dist_raw: geometry truth (0 in holes/outside) for culling + inset.
     # dist: smoothed, drives the crown profile shape.
+    # Cell-count sigmas are calibrated at export res; rescale so every
+    # resolution smooths the same physical distance (preview == export).
+    cell = REF_RES / res
     fp = meshops.rasterize_footprint(pv, pf, res, rng)
-    dist_raw, dist = meshops.distance_field(fp, sigma)
+    segs = meshops.top_boundary_segments(pv, pf, zmax)
+    dist_raw, dist = meshops.distance_field(fp, sigma * cell, segments=segs)
 
     # Tension: pull the crown down where the membrane is more constrained
     # than the nearest-edge distance implies (tapers, pinches, tips). The
@@ -135,7 +148,7 @@ def pillow_panel(
     if tension > 0.0:
         tau = meshops.membrane_tension(fp)
         if sigma > 0:
-            tau = ndimage.gaussian_filter(tau, sigma=max(sigma * 0.5, 1.0))
+            tau = ndimage.gaussian_filter(tau, sigma=max(sigma * cell * 0.5, 1.0))
         d_eff = dist * ((1.0 - tension) + tension * tau)
 
     prof = meshops.crown_profile(d_eff, crown, dref, exp)
@@ -147,7 +160,7 @@ def pillow_panel(
     # Round the saturation-knee shoulder (and any brush edge) so the bulge
     # has no crease line. Always applied; slightly stronger with a mask.
     knee = KNEE_BLUR_SIGMA + (MASK_BLUR_SIGMA if mask_grid is not None else 0.0)
-    prof = ndimage.gaussian_filter(prof, sigma=knee)
+    prof = ndimage.gaussian_filter(prof, sigma=knee * cell)
 
     # Wrapped-edge roll: fold the top surface down toward every edge
     # (outline, holes, corners alike) over the roll radius, tangent to the
@@ -178,28 +191,35 @@ def pillow_panel(
         # it gathers into a short diagonal crease running inward along the
         # corner bisector (reference photos, corner close-ups). Carve a
         # shallow gaussian groove per corner, scaled by the roll radius
-        # and how sharp the turn is.
+        # and how sharp the turn is. In the photos the fold reads as a
+        # faint diagonal tuck, not a dent: keep it shallow and close to
+        # the roll zone. Grid world coordinates use the raster's MARGIN
+        # convention (an off-by-MARGIN here shifts every dart diagonally,
+        # which shows up as asymmetric crumpled corners).
         if corners:
-            gy_w = fp.ymin + (np.arange(prof.shape[0]) - 1) * res
-            gx_w = fp.xmin + (np.arange(prof.shape[1]) - 1) * res
+            gy_w = fp.ymin + (np.arange(prof.shape[0]) - meshops.MARGIN) * res
+            gx_w = fp.xmin + (np.arange(prof.shape[1]) - meshops.MARGIN) * res
             GX, GY = np.meshgrid(gx_w, gy_w)
+            darts = np.zeros_like(prof)
             for cx, cy, bx, by, turn in corners:
                 sharp = min(float(turn) / 90.0, 1.5)
-                depth = 0.38 * roll * sharp
-                length = 3.2 * roll
-                width = 0.55 * roll
+                depth = 0.16 * roll * sharp
+                length = 2.2 * roll
+                width = 0.5 * roll
                 along = (GX - cx) * bx + (GY - cy) * by
                 across = -(GX - cx) * by + (GY - cy) * bx
                 # Groove centred just past the roll zone so it reads on
                 # the visible shoulder instead of being swallowed by the
                 # roll's own drop.
                 dart = -depth * np.exp(
-                    -0.5 * ((along - 1.5 * roll) / (0.6 * length)) ** 2
+                    -0.5 * ((along - 1.2 * roll) / (0.6 * length)) ** 2
                     - 0.5 * (across / width) ** 2
                 )
                 dart[along < 0] = 0.0
-                prof = prof + dart
-            prof = ndimage.gaussian_filter(prof, sigma=1.0)
+                darts += dart
+            # Blur ONLY the dart field: re-blurring the whole profile here
+            # would soften the calibrated roll radius on every edge.
+            prof = prof + ndimage.gaussian_filter(darts, sigma=max(1.0 * cell, 0.5))
 
     # --- delete flat top, keep sides/fillets/bottom ---
     keep = pf[~vtop[pf].all(axis=1)]
@@ -219,9 +239,18 @@ def pillow_panel(
     collar = _collar_points(ring_xy, fp, dist_raw, dist, grid_step)
 
     inset = grid_step * GRID_INSET_FACTOR
+    # Centre the grid within the footprint span: anchoring at xmin puts
+    # the last row/column a partial step from the far edge, so a mirror-
+    # symmetric outline got an asymmetric triangulation (and asymmetric
+    # chord error on the dome). Centred, symmetric shapes mesh
+    # symmetrically.
+    span_x = pv[:, 0].max() - fp.xmin
+    span_y = pv[:, 1].max() - fp.ymin
+    gx0 = fp.xmin + (span_x % grid_step) / 2.0
+    gy0 = fp.ymin + (span_y % grid_step) / 2.0
     gx, gy = np.meshgrid(
-        np.arange(fp.xmin, pv[:, 0].max(), grid_step),
-        np.arange(fp.ymin, pv[:, 1].max(), grid_step),
+        np.arange(gx0, pv[:, 0].max() + 1e-9, grid_step),
+        np.arange(gy0, pv[:, 1].max() + 1e-9, grid_step),
     )
     gp = np.column_stack([gx.ravel(), gy.ravel()])
     gp = gp[fp.sample(dist_raw, gp) > inset]
@@ -374,25 +403,23 @@ def _collar_points(
     norm = np.linalg.norm(vec, axis=1, keepdims=True)
     vec = np.divide(vec, norm, out=np.zeros_like(vec), where=norm > 1e-6)
 
-    # Graded point spacing: the ring is ~2 mm dense while the interior
-    # grid is grid_step apart. If every collar row stays 2 mm dense, the
-    # outermost row fans into each grid point and the resulting normal
-    # poles read as beads along the shoulder (one per grid point). Each
-    # row is therefore thinned toward the grid spacing via quantized
-    # dedup, so triangle size steps gently: ring 2mm -> ~0.4gs -> ~0.8gs
-    # -> grid.
+    # Both collar rows keep the ring's full ~2 mm density. They used to be
+    # thinned toward the grid spacing via quantized-coordinate dedup, but
+    # that retention pattern is irregular along the edge, so the chord sag
+    # of the triangles spanning the tightly-curved roll varied with an
+    # irregular ~half-grid period -- visible as soft waves on the shoulder
+    # silhouette (worst at preview resolution). Dense rows make the sag
+    # uniform and tiny. The "normal pole beads" the thinning originally
+    # prevented were an averaged-normal artifact; the top field now ships
+    # analytic normals, so dense fans shade cleanly.
     out = []
     for frac in (0.4, 0.8):
         off = grid_step * frac
         cand = ring_xy + vec * off
         d = fp.sample(dist_raw, cand)
         cand = cand[d > off * 0.5]
-        if not len(cand):
-            continue
-        q = max(off, 1.0)  # target spacing for this row
-        keys = np.round(cand / q).astype(np.int64)
-        _, uniq = np.unique(keys, axis=0, return_index=True)
-        out.append(cand[np.sort(uniq)])
+        if len(cand):
+            out.append(cand)
     if not out:
         return np.empty((0, 2))
     return np.vstack(out)

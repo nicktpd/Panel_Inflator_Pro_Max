@@ -26,6 +26,42 @@ for the 2D-import defaults. Measured/observed → encoded:
 Still pending from the user: a straight-on edge photo with a tape
 measure to confirm the 1.5″/0.5″ defaults against real dimensions.
 
+### Third calibration round (viewport feedback: "lumpy, dented, dome
+### not symmetrical", 2026-07-30)
+
+Measured on the 36×12 at export settings: up to ~3 mm left/right height
+asymmetry and crumpled corners. Root causes found and fixed:
+
+- **Corner darts were drawn 6 mm off-position** (the dart grid used the
+  old 1-cell raster margin instead of `MARGIN = 4`), shifting all four
+  darts diagonally — deeper into the shoulder on two corners, half off
+  the rim on the others. That was the "dented"/asymmetric look at the
+  panel ends. Darts also softened (0.16·roll deep, was 0.38·roll — the
+  photos show a faint tuck, not a groove) and only the dart field is
+  blurred now, not the whole profile.
+- **The EDT distance field quantized the outline to whole raster cells**:
+  914.4 mm / res never divides evenly, so one edge sat on a cell boundary
+  and the opposite edge mid-cell — the whole crown skewed up to half a
+  cell per side. The raw distance field is now computed EXACTLY from the
+  panel's true top-boundary segments (KDTree-accelerated point-segment
+  distance); the raster only handles inside/outside decisions. Also kills
+  stair-step scallops on diagonal/curved outlines.
+- **Collar thinning made the shoulder wavy**: quantized-coordinate dedup
+  kept collar points irregularly, so roll-zone chord sag varied with an
+  irregular period (worst at preview res). Collar rows now keep full ring
+  density — the "normal-pole beads" the thinning prevented died when the
+  top switched to analytic normals.
+- **Preview ≠ export**: cell-count sigmas (dist smoothing, knee blur)
+  smoothed twice the millimetres at 4 mm preview res than at 2 mm export
+  res. All cell-based sigmas are now rescaled by `REF_RES / res` so every
+  resolution smooths the same physical distance.
+- Membrane-tension upsample: bilinear → cubic + blur (gradient kinks from
+  the coarse grid could ripple the shoulder); interior top grid centred
+  in the footprint so symmetric outlines triangulate symmetrically.
+
+After: left/right and front/back asymmetry ≤ 0.5 mm at export
+(tessellation chords), preview silhouette matches export.
+
 ### Second calibration round (user viewport feedback on the above)
 
 - Wall ribbing + rim sawtooth were shading artifacts: walls now get

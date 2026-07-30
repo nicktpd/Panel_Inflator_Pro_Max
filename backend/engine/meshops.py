@@ -150,13 +150,83 @@ def rasterize_footprint(
     return FootprintRaster(grid, xmin, ymin, res)
 
 
-def distance_field(fp: FootprintRaster, sigma: float) -> tuple[np.ndarray, np.ndarray]:
+def top_boundary_segments(pv: np.ndarray, pf: np.ndarray, zmax: float | None = None) -> np.ndarray:
+    """XY segments (n, 2, 2) bounding the flat-top patch (outline + holes).
+
+    Edges referenced by exactly one flat-top face are the border of the
+    top region -- the panel's true outline (and hole rims) with no raster
+    involved. Order doesn't matter for distance queries.
+    """
+    vtop = top_vertex_mask(pv, zmax)
+    ftop = pf[vtop[pf].all(axis=1)]
+    if not len(ftop):
+        return np.empty((0, 2, 2))
+    edges = np.concatenate([ftop[:, [0, 1]], ftop[:, [1, 2]], ftop[:, [2, 0]]])
+    key = np.sort(edges, axis=1)
+    uniq, counts = np.unique(key, axis=0, return_counts=True)
+    border = uniq[counts == 1]
+    return pv[border][:, :, :2].astype(np.float64)
+
+
+def _dist_to_segments(pts: np.ndarray, segs: np.ndarray, res: float) -> np.ndarray:
+    """Exact distance from each xy point to the nearest of many segments.
+
+    Long segments are subdivided to <= 2*res pieces, candidates are found
+    with a KDTree on piece midpoints (k nearest), and the exact point-
+    segment distance is evaluated only for those candidates. With pieces
+    this short the k-candidate set always contains the true nearest
+    segment, so the result is exact to float precision.
+    """
+    from scipy.spatial import cKDTree
+
+    a, b = segs[:, 0], segs[:, 1]
+    seg_len = np.linalg.norm(b - a, axis=1)
+    pieces_a, pieces_b = [], []
+    nsub = np.maximum(np.ceil(seg_len / (2.0 * res)).astype(int), 1)
+    for n in np.unique(nsub):
+        sel = nsub == n
+        aa, bb = a[sel], b[sel]
+        for i in range(n):
+            t0, t1 = i / n, (i + 1) / n
+            pieces_a.append(aa + (bb - aa) * t0)
+            pieces_b.append(aa + (bb - aa) * t1)
+    pa = np.vstack(pieces_a)
+    pb = np.vstack(pieces_b)
+    mid = (pa + pb) * 0.5
+
+    k = min(8, len(mid))
+    _, idx = cKDTree(mid).query(pts, k=k)
+    if k == 1:
+        idx = idx[:, None]
+    A = pa[idx]                      # (npts, k, 2)
+    B = pb[idx]
+    P = pts[:, None, :]
+    AB = B - A
+    denom = np.maximum((AB * AB).sum(axis=2), 1e-18)
+    t = np.clip(((P - A) * AB).sum(axis=2) / denom, 0.0, 1.0)
+    proj = A + AB * t[:, :, None]
+    d = np.linalg.norm(P - proj, axis=2)
+    return d.min(axis=1)
+
+
+def distance_field(
+    fp: FootprintRaster, sigma: float, segments: np.ndarray | None = None
+) -> tuple[np.ndarray, np.ndarray]:
     """Interior distance-to-boundary in mm: (raw, smoothed).
 
-    Euclidean distance transform of the occupancy grid scaled to mm; the
-    smoothed copy (gaussian, sigma in grid cells so preview and export
-    smooth by the same *relative* amount) drives the crown profile so it
-    has no faceting from the raster.
+    With ``segments`` (the panel's true top-boundary segments from
+    ``top_boundary_segments``) the raw field is computed EXACTLY at every
+    occupied cell centre: sub-cell accurate, no raster stair-steps on
+    diagonal edges, and -- critically -- symmetric for symmetric outlines.
+    The cell-quantized EDT it replaces put one edge of a panel on a cell
+    boundary and the opposite edge mid-cell whenever the span didn't
+    divide evenly by the resolution, which skewed the whole crown by up
+    to half a cell per side. Without segments (degenerate/non-manifold
+    tops) it falls back to the EDT of the occupancy grid.
+
+    The smoothed copy (gaussian, sigma in grid cells; callers rescale for
+    resolution so preview and export smooth the same physical distance)
+    drives the crown profile so it has no faceting from the raster.
 
     The RAW field must be used for geometric decisions (triangle culling,
     interior-grid inset): it is exactly 0 outside the footprint and inside
@@ -164,7 +234,15 @@ def distance_field(fp: FootprintRaster, sigma: float) -> tuple[np.ndarray, np.nd
     the boundary, which at coarse preview resolution is enough to wrongly
     keep triangles spanning a real hole.
     """
-    raw = ndimage.distance_transform_edt(fp.grid) * fp.res
+    if segments is not None and len(segments):
+        rows, cols = np.nonzero(fp.grid)
+        cx = fp.xmin + (cols - MARGIN) * fp.res
+        cy = fp.ymin + (rows - MARGIN) * fp.res
+        d = _dist_to_segments(np.column_stack([cx, cy]), segments, fp.res)
+        raw = np.zeros(fp.grid.shape, dtype=np.float64)
+        raw[rows, cols] = d
+    else:
+        raw = ndimage.distance_transform_edt(fp.grid) * fp.res
     smooth = ndimage.gaussian_filter(raw, sigma=sigma) if sigma > 0 else raw
     return raw, smooth
 
@@ -315,7 +393,13 @@ def membrane_tension(fp: "FootprintRaster", target_cells: int = 160) -> np.ndarr
     tau = ndimage.gaussian_filter(tau, sigma=1.2)
 
     if factor > 1:
-        tau = ndimage.zoom(tau, (ny / H, nx / W), order=1, mode="nearest")
+        # Cubic zoom: bilinear (order=1) leaves piecewise-linear gradient
+        # kinks every `factor` cells, and because the crown profile is a
+        # function of tau * dist those kinks surface as a wavy specular
+        # band along the shoulder of an otherwise-clean panel. Cubic is
+        # C2 across the coarse cells; a follow-up blur of ~the coarse cell
+        # size removes any residual block structure.
+        tau = ndimage.zoom(tau, (ny / H, nx / W), order=3, mode="nearest")
         tau = tau[:ny, :nx]
         if tau.shape != grid.shape:
             tau = np.pad(
@@ -323,6 +407,8 @@ def membrane_tension(fp: "FootprintRaster", target_cells: int = 160) -> np.ndarr
                 ((0, ny - tau.shape[0]), (0, nx - tau.shape[1])),
                 mode="edge",
             )
+        tau = ndimage.gaussian_filter(tau, sigma=factor * 0.8)
+        tau = np.clip(tau, 0.0, 1.0)
     return np.where(grid, tau, 1.0)
 
 
