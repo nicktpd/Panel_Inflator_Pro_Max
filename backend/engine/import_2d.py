@@ -491,8 +491,9 @@ def extrude_with_roundover(
 
     # Several wall rings between bottom and top: the pillow stage bows
     # the side walls outward (belly) and barrels them with the crown,
-    # which needs mid-height vertices to act on. ~6 mm vertical spacing.
-    nz = max(3, int(math.ceil(thickness / 6.0)) + 1)
+    # which needs mid-height vertices to act on. ~4 mm vertical spacing
+    # (6 mm rows showed as flat bands in flat-shading model viewers).
+    nz = max(3, int(math.ceil(thickness / 4.0)) + 1)
     zs = np.linspace(0.0, thickness, nz)
 
     verts: list[np.ndarray] = []

@@ -200,25 +200,36 @@ def pillow_panel(
             mask_grid, sigma=(KNEE_BLUR_SIGMA + MASK_BLUR_SIGMA) * cell
         )
 
-    # 1D blurred roll-drop table. The wrapped-edge roll is a pure
-    # function of the exact edge distance, so it is precomputed as a 1D
-    # curve: quarter circle, continued at -roll for d < 0 (the wall),
-    # gaussian-blurred by ~roll/3 to round BOTH of its curvature
-    # discontinuities (wall->arc and arc->crown). Physical units
-    # throughout -- identical at preview and export resolution.
+    # 1D roll-drop table: EXACT quarter circle from the rim out to
+    # m = 0.5*roll (so the surface meets the vertical wall with a true
+    # vertical tangent -- the previous gaussian-blurred curve flattened
+    # that tangent and the top met the wall at an angle, a hard crease
+    # line along the entire seam, with a flat chamfer band above it: the
+    # "harsh transition between dome and sides"), then a quintic C2
+    # blend that lands at zero value/slope/curvature at e = 2.2*roll,
+    # spreading the shoulder curvature further into the dome than the
+    # old blur did. Analytic and resolution-independent.
     drop_tab = None
     if roll > 0.0:
-        sig_mm = max(roll / 3.0, 2.0)
-        step = 0.05
-        pad = 5.0 * sig_mm
-        daxis = np.arange(-pad, roll + pad, step)
-        curve = np.where(
-            daxis < 0.0,
-            -roll,
-            np.sqrt(np.maximum(roll**2 - (roll - np.minimum(daxis, roll)) ** 2, 0.0))
-            - roll,
+        m = 0.5 * roll
+        e = 2.2 * roll
+        step = 0.02
+        daxis = np.arange(0.0, e + 5.0, step)
+        arc = np.sqrt(
+            np.maximum(roll**2 - (roll - np.minimum(daxis, roll)) ** 2, 0.0)
+        ) - roll
+        fm = np.sqrt(roll**2 - (roll - m) ** 2) - roll
+        f1 = (roll - m) / np.sqrt(roll**2 - (roll - m) ** 2)
+        f2 = -(roll**2) / (roll**2 - (roll - m) ** 2) ** 1.5
+        hspan = e - m
+        a0, a1, a2 = fm, f1 * hspan, 0.5 * f2 * hspan * hspan
+        A = np.array([[1.0, 1.0, 1.0], [3.0, 4.0, 5.0], [6.0, 12.0, 20.0]])
+        c3, c4, c5 = np.linalg.solve(
+            A, -np.array([a0 + a1 + a2, a1 + 2.0 * a2, 2.0 * a2])
         )
-        curve = ndimage.gaussian_filter1d(curve, sigma=sig_mm / step)
+        u = np.clip((daxis - m) / hspan, 0.0, 1.0)
+        blend = a0 + a1 * u + a2 * u**2 + c3 * u**3 + c4 * u**4 + c5 * u**5
+        curve = np.where(daxis <= m, arc, np.where(daxis < e, blend, 0.0))
         drop_tab = (daxis, curve)
 
     # Corner fold darts: real vinyl can't wrap a convex corner flat -- it
@@ -405,6 +416,17 @@ def pillow_panel(
             return vx, vy
 
         ox, oy = _outward(pv[:, :2])
+        # Corner fallback for the DIRECTION (normals only): the belly
+        # displacement keeps the conservative zero at degenerate spots,
+        # but wall normals need a valid outward everywhere or the corner
+        # wall column shades off averaged normals (vertical streak).
+        onorm2 = np.hypot(ox, oy)
+        weak_w = (onorm2 < 0.5) & (np.exp(-fp.sample(dist, pv[:, :2]) / max(roll, 1e-6)) > 0.05)
+        if weak_w.any() and len(segs):
+            inw = meshops.nearest_segment_inward(pv[weak_w, :2], segs, res)
+            ox = ox.copy(); oy = oy.copy()
+            ox[weak_w] = -inw[:, 0]
+            oy[weak_w] = -inw[:, 1]
         t = np.clip((pv[:, 2] - zmin) / thick, 0.0, 1.0)
         belly_amp = 0.15 * roll
         belly = belly_amp * t * t
@@ -425,6 +447,30 @@ def pillow_panel(
         new_v[:, 0] += tx * belly_amp * near_top
         new_v[:, 1] += ty * belly_amp * near_top
         wall = (ox, oy, t, near_edge, belly_amp)
+
+        # Corner tuck: the slab's corner is a sharp vertical arris in
+        # plan, but a wrapped corner ROUNDS -- barely at the board base,
+        # increasingly toward the top where foam + vinyl take over
+        # (corner photos; also the sharp arris made normal interpolation
+        # smear a bright streak down every corner). Pull vertices near
+        # each convex corner inward along its bisector, with the same
+        # t^2 height weight as the belly (zero at the base) and a
+        # gaussian falloff over ~1.2 roll radii in plan. Applied to wall
+        # AND top verts (t = 1) so the seam stays welded and the rim
+        # outline rounds with the wall.
+        if corners:
+            sharp_amp = 0.35 * roll
+            for cx, cy, bx, by, turn in corners:
+                sfac = min(float(turn) / 90.0, 1.5)
+                rng2 = (1.2 * roll) ** 2
+                dc = (pv[:, 0] - cx) ** 2 + (pv[:, 1] - cy) ** 2
+                wgt_c = sharp_amp * sfac * np.exp(-dc / rng2) * t * t
+                pv[:, 0] += bx * wgt_c
+                pv[:, 1] += by * wgt_c
+                dct = (new_v[:, 0] - cx) ** 2 + (new_v[:, 1] - cy) ** 2
+                wgt_t = sharp_amp * sfac * np.exp(-dct / rng2)
+                new_v[:, 0] += bx * wgt_t
+                new_v[:, 1] += by * wgt_t
 
     # --- merge old (kept) and new (top) into one vertex/face set ---
     offset = len(pv)
@@ -467,9 +513,18 @@ def pillow_panel(
     ivx = fp.sample(gcol_n, ring_xy)
     ivy = fp.sample(grow_n, ring_xy)
     ivn = np.hypot(ivx, ivy)
-    ivx = np.where(ivn > 1e-6, ivx / np.maximum(ivn, 1e-9), 0.0)
-    ivy = np.where(ivn > 1e-6, ivy / np.maximum(ivn, 1e-9), 0.0)
-    inward = np.column_stack([ivx, ivy])
+    inward = np.column_stack([
+        np.where(ivn > 1e-6, ivx / np.maximum(ivn, 1e-9), 0.0),
+        np.where(ivn > 1e-6, ivy / np.maximum(ivn, 1e-9), 0.0),
+    ])
+    # At convex corners the smoothed-gradient direction degenerates (the
+    # bisector is equidistant from both edges) and a zeroed inward made
+    # those rim vertices' normals point straight up -- a bright zigzag
+    # streak down every corner. Fall back to the nearest ORIENTED
+    # segment's left (inward) normal, which is defined everywhere.
+    weak = ivn < 0.35
+    if weak.any() and len(segs):
+        inward[weak] = meshops.nearest_segment_inward(ring_xy[weak], segs, res)
     h1 = _H(ring_xy + 0.5 * inward)
     h2 = _H(ring_xy + 1.0 * inward)
     slope = (h2 - h1) / 0.5  # dH/dd at the rim (positive: rises inward)

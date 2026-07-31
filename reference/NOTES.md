@@ -172,6 +172,32 @@ Result: rectangle, circle and pedal are watertight (0 open edges) at
 preview and export; regression test builds a LINE+ARC pill DXF and
 asserts chaining + watertightness end-to-end.
 
+### Tenth round (user: bottom 2/3 unconvincing -- dome-to-side
+### transition flat and harsh; flat spots in Windows 3D Viewer)
+
+- **Rim-tangent roll.** The 1D gaussian blur of the roll curve (ninth
+  round) flattened the arc's vertical tangent at d = 0: the top met the
+  vertical wall at an angle -- a hard crease line along the entire seam
+  with a flat chamfer band above it. The drop curve is now EXACT
+  quarter circle from the rim to m = 0.5*roll (true vertical tangent,
+  no seam crease, rim depth exactly `roll` -> visible wall exactly 1"
+  on the calibration panel, matching the photos), then a quintic C2
+  blend to zero at e = 2.2*roll, spreading the shoulder curvature
+  deeper into the dome than the blur did. Fully analytic.
+- **Corner tuck.** The slab corner was a sharp vertical arris in plan;
+  real wrapped corners round, increasingly toward the top. Vertices
+  near each convex corner are pulled inward along its bisector with the
+  belly's t^2 height weight (base pinned) and a gaussian plan falloff
+  over ~1.2 roll radii, applied to wall and top alike so the seam stays
+  welded.
+- **Density for flat-shading viewers.** Windows 3D Viewer flat-shades /
+  re-derives normals, so geometry must carry the smoothness: export top
+  grid 6 -> 4 mm, wall rows 6 -> 4 mm (~83k faces on the 36x12; the
+  surface is analytic, so density is purely a sampling-rate knob).
+- Diagnostic note: a bright zigzag streak at wall silhouettes in the
+  scratchpad software renderer is a specular artifact of that tool
+  (moves with the camera), not of the model.
+
 ### Ninth round (user: faint lines on the dome at "just the right angle")
 
 Glossy vinyl at grazing angles reveals CURVATURE discontinuities, not

@@ -23,7 +23,10 @@ from . import meshops, pillow
 PREVIEW_RES = 4.0
 PREVIEW_GRID = 10.0
 EXPORT_RES = 2.0
-EXPORT_GRID = 6.0
+# 4 mm top grid: viewers that flat-shade or re-derive normals (Windows
+# 3D Viewer) show the 6 mm grid's facets as flat spots; the surface is
+# analytic, so denser tessellation is purely a sampling-rate knob.
+EXPORT_GRID = 4.0
 
 # Bump whenever the pillow engine's OUTPUT changes for identical inputs
 # (algorithm fixes, not parameter changes), so stale caches from older
@@ -47,7 +50,11 @@ EXPORT_GRID = 6.0
 # 9 = C2 (curvature-continuous) surface: quintic saturation knee, quintic
 #     blend weight, soft tension clip, regularized Spalding ridge, cubic
 #     sampling of smooth fields -- no grazing-angle contour lines.
-ENGINE_VERSION = 9
+# 10 = rim-tangent roll (exact arc at the rim + quintic C2 tail, no
+#      blur): the top meets the wall tangentially again -- no seam
+#      crease, softer dome-to-side transition; denser export mesh
+#      (4 mm grid, 4 mm wall rows) for flat-shading viewers.
+ENGINE_VERSION = 10
 
 
 def params_key(params: dict, res: float, grid_step: float, mask_version: int) -> str:

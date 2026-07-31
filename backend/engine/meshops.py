@@ -196,6 +196,38 @@ def top_boundary_segments(pv: np.ndarray, pf: np.ndarray, zmax: float | None = N
     return pv[border][:, :, :2].astype(np.float64)
 
 
+def nearest_segment_inward(pts_xy: np.ndarray, segs: np.ndarray, res: float) -> np.ndarray:
+    """Unit inward normal of the ORIENTED boundary segment nearest each point.
+
+    The material is left of travel (CCW outline, CW holes), so the left
+    normal of the nearest segment always points into the panel -- even
+    for points exactly ON the outline or at a convex corner, where
+    gradient-of-distance directions degenerate. Used as the fallback
+    direction for rim/wall normals at corners.
+    """
+    from scipy.spatial import cKDTree
+
+    a, b = segs[:, 0], segs[:, 1]
+    seg_len = np.linalg.norm(b - a, axis=1)
+    nsub = np.maximum(np.ceil(seg_len / (2.0 * res)).astype(int), 1)
+    pieces_a, pieces_b = [], []
+    for n in np.unique(nsub):
+        sel = nsub == n
+        aa, bb = a[sel], b[sel]
+        for i in range(n):
+            t0, t1 = i / n, (i + 1) / n
+            pieces_a.append(aa + (bb - aa) * t0)
+            pieces_b.append(aa + (bb - aa) * t1)
+    pa = np.vstack(pieces_a)
+    pb = np.vstack(pieces_b)
+    mid = (pa + pb) * 0.5
+    _, idx = cKDTree(mid).query(pts_xy, k=1)
+    t = pb[idx] - pa[idx]
+    tl = np.maximum(np.linalg.norm(t, axis=1, keepdims=True), 1e-12)
+    t = t / tl
+    return np.column_stack([-t[:, 1], t[:, 0]])  # left normal = inward
+
+
 def winding_inside(pts_xy: np.ndarray, segs: np.ndarray) -> np.ndarray:
     """Exact inside test for points vs oriented boundary segments.
 
